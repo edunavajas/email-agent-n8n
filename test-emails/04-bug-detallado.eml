@@ -1,0 +1,14 @@
+From: Pedro <pedro@cliente.example>
+To: soporte@tudominio.com
+Subject: El panel devuelve 500 al guardar
+Date: Fri, 17 Oct 2026 09:15:00 +0200
+Message-ID: <ep3-04-bug@cliente.example>
+Content-Type: text/plain; charset=utf-8
+
+Hola. El panel de cliente falla al guardar una ficha.
+
+Qué hacía: editar el teléfono de la ficha y pulsar Guardar.
+Qué esperaba: el mensaje "Guardado" y el teléfono nuevo al recargar.
+Qué ocurrió: página en blanco y en la consola del navegador "POST /api/profile 500".
+Cuándo: hoy a las 9:12, usuario pedro@cliente.example, navegador Firefox 143.
+No es urgente, pero no puedo actualizar el contacto.

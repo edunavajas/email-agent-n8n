@@ -1,0 +1,276 @@
+{
+  "name": "05 - Resumen",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "### 05 Resumen\n\nA las 06:00 UTC (08:00 en Madrid en horario de verano; la instancia del episodio 2 está en UTC).\n\nTambién se puede lanzar con el botón. Vence aprobaciones, borra correos viejos y manda números, no un volcado.",
+        "height": 220,
+        "width": 560,
+        "color": 5
+      },
+      "id": "1d505361-9b82-5ece-bcdb-d3e43f9c40ff",
+      "name": "Notas resumen",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 6,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "df1f25d4-338e-5a00-a341-044b4b7b469a",
+      "name": "Cada mañana",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        220,
+        260
+      ],
+      "notes": "06:00 UTC."
+    },
+    {
+      "parameters": {},
+      "id": "ab313d35-2389-505f-be1b-1f0a1c60bb4a",
+      "name": "Resumen ahora",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        220,
+        460
+      ],
+      "notes": "Para enseñarlo en cámara sin esperar a mañana."
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "includeOtherFields": true,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e1394416-078d-57df-ada4-b9f7ad001df3",
+              "name": "retention_days",
+              "value": 90,
+              "type": "number"
+            },
+            {
+              "id": "ddaacb1d-960c-50bf-af82-76a67bda411a",
+              "name": "n8n_url",
+              "value": "https://tu-n8n.example.com",
+              "type": "string"
+            },
+            {
+              "id": "436826c5-b74a-518e-ac35-ac150f63a559",
+              "name": "telegram_chat_id",
+              "value": "cambia-esto",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a9267dd6-9e25-564f-9370-1a9a95a67de7",
+      "name": "Configuración",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        460,
+        360
+      ],
+      "notes": "Valores que se ven en cámara. El .env no entra aquí: Coolify bloquea $env."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH expired AS (\n  UPDATE mail_messages\n  SET status = 'aprobacion_vencida'\n  WHERE status = 'esperando_aprobacion' AND approval_due_at < now()\n  RETURNING 1\n)\nSELECT count(*)::int AS expired FROM expired",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "8e731abf-b9fc-5813-b8d7-a034381cce30",
+      "name": "Vencer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        700,
+        360
+      ],
+      "notes": "Pasado el plazo no se envía. Se marca vencida.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH purged AS (\n  DELETE FROM mail_messages\n  WHERE created_at < now() - make_interval(days => $1::int)\n  RETURNING 1\n)\nSELECT count(*)::int AS purged FROM purged",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [$('Configuración').first().json.retention_days] }}"
+        }
+      },
+      "id": "b482fc64-d2f3-5edd-b7d6-0582e1346fd1",
+      "name": "Purgar",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        940,
+        360
+      ],
+      "notes": "Borra el correo y, en cascada, su log. El plazo está en Configuración.",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  count(*) FILTER (WHERE created_at > now() - interval '1 day')::int AS received,\n  count(*) FILTER (WHERE status = 'respondido_auto' AND auto_replied_at > now() - interval '1 day')::int AS auto_replied,\n  count(*) FILTER (WHERE status = 'respondido_manual' AND updated_at > now() - interval '1 day')::int AS approved,\n  count(*) FILTER (WHERE status = 'rechazado' AND updated_at > now() - interval '1 day')::int AS rejected,\n  count(*) FILTER (WHERE status = 'lead_registrado' AND updated_at > now() - interval '1 day')::int AS leads,\n  count(*) FILTER (WHERE status = 'issue_creada' AND updated_at > now() - interval '1 day')::int AS issues,\n  count(*) FILTER (WHERE status = 'descartado' AND updated_at > now() - interval '1 day')::int AS spam,\n  count(*) FILTER (WHERE status = 'urgente_avisado' AND updated_at > now() - interval '1 day')::int AS urgent,\n  count(*) FILTER (WHERE status = 'esperando_aprobacion')::int AS waiting\nFROM mail_messages",
+        "options": {
+          "queryBatching": "independently"
+        }
+      },
+      "id": "e9183ff0-8b90-5094-a09b-d3613bf079fd",
+      "name": "Contar",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1180,
+        360
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "'use strict';\n\nfunction escapeHtml(value) {\n  return String(value || '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction formatSources(sources) {\n  const list = Array.isArray(sources) ? sources.slice(0, 3) : [];\n  if (!list.length) return 'Sin fragmentos en la base de conocimiento.';\n  return list.map((source) => {\n    const title = source.title || 'Documento';\n    const when = source.updated_at ? ` (${String(source.updated_at).slice(0, 10)})` : '';\n    const url = source.canonical_url || source.url || '';\n    return `• ${title}${when}${url ? `\\n  ${url}` : ''}`;\n  }).join('\\n');\n}\n\nfunction approvalMessage(row) {\n  const confidence = Math.round(Number(row.confidence || 0) * 100);\n  const draft = String(row.draft_reply || '').slice(0, 900);\n  const lines = [\n    '<b>Correo para revisar</b>',\n    `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,\n    `Asunto: ${escapeHtml(row.subject)}`,\n    `Categoría: ${escapeHtml(row.category)}`,\n    `Confianza: ${confidence}%`,\n  ];\n  if (row.injection) lines.push('Aviso: el correo intentó dar instrucciones al sistema. No se ha obedecido.');\n  if (row.sensitive) lines.push('Aviso: habla de precio, plazo, devolución o datos personales. Hace falta una persona.');\n  lines.push('', '<b>Borrador</b>', escapeHtml(draft || '(vacío)'), '', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));\n  return lines.join('\\n').slice(0, 3900);\n}\n\nfunction summaryMessage(counts) {\n  const n = (key) => Number(counts[key] || 0);\n  return [\n    '<b>Resumen del correo</b>',\n    `Recibidos: ${n('received')}`,\n    `Respondidos solos: ${n('auto_replied')}`,\n    `Aprobados a mano: ${n('approved')}`,\n    `Rechazados: ${n('rejected')}`,\n    `Leads: ${n('leads')}`,\n    `Issues: ${n('issues')}`,\n    `Spam registrado: ${n('spam')}`,\n    `Urgentes: ${n('urgent')}`,\n    `Esperando aprobación: ${n('waiting')}`,\n    `Aprobaciones vencidas: ${n('expired')}`,\n    `Borrados por retención: ${n('purged')}`,\n  ].join('\\n');\n}\n\nfunction replySubject(subject) {\n  const clean = String(subject || '').trim() || '(sin asunto)';\n  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;\n}\n\nconst text = summaryMessage({\n  ...$json,\n  expired: $('Vencer').first().json.expired,\n  purged: $('Purgar').first().json.purged,\n});\nreturn { json: { text, chat_id: $('Configuración').first().json.telegram_chat_id } };\n"
+      },
+      "id": "ffc829fa-81ba-5028-aa6b-35e1e1d662ce",
+      "name": "Redactar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "id": "4e7b05f0-a49c-5e76-b0f2-95ad0b7306b2",
+      "name": "Mandar resumen",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1660,
+        360
+      ],
+      "notes": "Números en líneas cortas."
+    }
+  ],
+  "connections": {
+    "Cada mañana": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumen ahora": {
+      "main": [
+        [
+          {
+            "node": "Configuración",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuración": {
+      "main": [
+        [
+          {
+            "node": "Vencer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vencer": {
+      "main": [
+        [
+          {
+            "node": "Purgar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Purgar": {
+      "main": [
+        [
+          {
+            "node": "Contar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contar": {
+      "main": [
+        [
+          {
+            "node": "Redactar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Redactar": {
+      "main": [
+        [
+          {
+            "node": "Mandar resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

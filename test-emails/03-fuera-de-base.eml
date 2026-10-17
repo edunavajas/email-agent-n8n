@@ -1,0 +1,8 @@
+From: Nuria <nuria@cliente.example>
+To: soporte@tudominio.com
+Subject: Integración con SAP
+Date: Fri, 17 Oct 2026 09:10:00 +0200
+Message-ID: <ep3-03-sap@cliente.example>
+Content-Type: text/plain; charset=utf-8
+
+Hola. Necesitamos saber si Taller Norte tiene una integración oficial con SAP S/4HANA para sincronizar pedidos cada quince minutos. ¿Hay conector, documentación y un entorno de pruebas?
