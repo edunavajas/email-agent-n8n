@@ -3,8 +3,8 @@
   "nodes": [
     {
       "parameters": {
-        "content": "### 01 Ingesta\n\nIMAP es el disparador real. El webhook `mail-ingest` hace el mismo camino para pruebas, con la cabecera X-MAIL-API-Key.\n\nEl estado queda en Postgres. Aquí no se espera a nadie.",
-        "height": 220,
+        "content": "### 01 Ingesta\n\nIMAP es el disparador real. El webhook `mail-ingest` hace el mismo camino para pruebas, con la cabecera X-MAIL-API-Key.\n\nPrimero se reserva el Message-ID en Postgres (`procesando`). Si ya estaba, es un duplicado y no se llama al modelo.\n\nSi no se puede pasar el correo al 02, 03a o 04, la fila queda en `error_interno` y llega un aviso a Telegram.",
+        "height": 240,
         "width": 560,
         "color": 5
       },
@@ -33,7 +33,13 @@
         220,
         300
       ],
-      "notes": "Bandeja. Formato simple: texto, HTML y cabeceras. Sin adjuntos."
+      "credentials": {
+        "imap": {
+          "id": null,
+          "name": "IMAP"
+        }
+      },
+      "notes": "Formato simple: textPlain, textHtml y todas las cabeceras en metadata (Message-ID, Auto-Submitted, List-Id...). Sin adjuntos."
     },
     {
       "parameters": {
@@ -51,6 +57,12 @@
         220,
         520
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Mail API Key"
+        }
+      },
       "notes": "POST /webhook/mail-ingest con el mismo JSON que normaliza el flujo. Solo pruebas.",
       "webhookId": "f308f4bb-5bf3-5dc1-a84c-6db67aea0acf"
     },
@@ -68,12 +80,6 @@
               "type": "string"
             },
             {
-              "id": "4ea5ddd9-1416-585f-b87e-6ef538980c0b",
-              "name": "company_name",
-              "value": "Taller Norte",
-              "type": "string"
-            },
-            {
               "id": "d284dec3-bb25-5906-934a-d9f57c8caa90",
               "name": "confidence_threshold",
               "value": 0.75,
@@ -83,18 +89,6 @@
               "id": "5f27b463-1fb5-5916-ac6c-4eb55790a0cb",
               "name": "min_rag_score",
               "value": 0.45,
-              "type": "number"
-            },
-            {
-              "id": "bb097cf4-72bc-5191-87d3-40d8e370cc99",
-              "name": "approval_hours",
-              "value": 24,
-              "type": "number"
-            },
-            {
-              "id": "e1394416-078d-57df-ada4-b9f7ad001df3",
-              "name": "retention_days",
-              "value": 90,
               "type": "number"
             },
             {
@@ -112,31 +106,25 @@
             {
               "id": "5e00c7e4-7d6e-564c-ad2f-43e4bd9da032",
               "name": "llm_model",
-              "value": "deepseek-v4-flash",
+              "value": "deepseek-flash",
               "type": "string"
             },
             {
               "id": "e4bc5e52-7566-57a8-aa52-8d6dc106ac62",
               "name": "rag_url",
-              "value": "https://tu-n8n.example.com/webhook/rag-search",
+              "value": "http://localhost:5678/webhook/rag-search",
               "type": "string"
             },
             {
               "id": "ddaacb1d-960c-50bf-af82-76a67bda411a",
               "name": "n8n_url",
-              "value": "https://tu-n8n.example.com",
+              "value": "http://localhost:5678",
               "type": "string"
             },
             {
               "id": "436826c5-b74a-518e-ac35-ac150f63a559",
               "name": "telegram_chat_id",
               "value": "cambia-esto",
-              "type": "string"
-            },
-            {
-              "id": "0f65f65a-a5db-5ec6-9975-160e8227fbab",
-              "name": "github_repo",
-              "value": "tu-usuario/email-agent-sandbox",
               "type": "string"
             },
             {
@@ -161,7 +149,7 @@
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// Convierte el correo del nodo IMAP (o del webhook de prueba) en texto limpio.\n// El HTML, la firma y la cadena de respuestas no deben llegar al modelo.\n\nfunction decodeEntities(value) {\n  return String(value || '')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&lt;/gi, '<')\n    .replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;/gi, \"'\")\n    .replace(/&#(\\d+);/g, (_, n) => String.fromCharCode(Number(n)));\n}\n\nfunction htmlToText(html) {\n  let text = String(html || '');\n  text = text.replace(/<script[\\s\\S]*?<\\/script>/gi, ' ');\n  text = text.replace(/<style[\\s\\S]*?<\\/style>/gi, ' ');\n  text = text.replace(/<img\\b[^>]*>/gi, ' ');\n  text = text.replace(/<br\\s*\\/?>/gi, '\\n');\n  text = text.replace(/<\\/p>/gi, '\\n');\n  text = text.replace(/<\\/div>/gi, '\\n');\n  text = text.replace(/<\\/tr>/gi, '\\n');\n  text = text.replace(/<[^>]+>/g, ' ');\n  return decodeEntities(text);\n}\n\nfunction headerMap(raw) {\n  const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};\n  const headers = raw.headers && typeof raw.headers === 'object' ? raw.headers : {};\n  const merged = {};\n  for (const [key, value] of Object.entries({ ...metadata, ...headers })) {\n    merged[String(key).toLowerCase()] = Array.isArray(value) ? value.join(' ') : String(value ?? '');\n  }\n  return merged;\n}\n\nfunction isoOrNull(value) {\n  const time = Date.parse(value || '');\n  if (!Number.isFinite(time)) return null;\n  return new Date(time).toISOString();\n}\n\nfunction parseAddress(value) {\n  const text = String(value || '').trim();\n  const match = text.match(/<([^>]+)>/);\n  const address = (match ? match[1] : text).trim().toLowerCase();\n  const name = match ? text.slice(0, match.index).replace(/\"/g, '').trim() : '';\n  return { address, name };\n}\n\nfunction cutQuotedChain(text) {\n  const markers = [\n    /^-----Original Message-----/im,\n    /^_{5,}\\s*$/m,\n    /^On .+wrote:\\s*$/im,\n    /^El .+escribi[oó]:\\s*$/im,\n    /^From:\\s.+\\nSent:\\s/im,\n    /^De:\\s.+\\nEnviado(?: el)?:\\s/im,\n    /^>+ ?On .+wrote:\\s*$/im,\n  ];\n  let cut = text.length;\n  for (const marker of markers) {\n    const found = marker.exec(text);\n    if (found && found.index < cut) cut = found.index;\n  }\n  const kept = text.slice(0, cut);\n  return kept\n    .split('\\n')\n    .filter((line) => !/^\\s*>/.test(line))\n    .join('\\n');\n}\n\nfunction cutSignature(text) {\n  const lines = text.split('\\n');\n  const cutAt = lines.findIndex((line) => {\n    const trimmed = line.trim();\n    return trimmed === '--' || trimmed === '—' || /^enviado desde mi /i.test(trimmed) || /^sent from my /i.test(trimmed) || /^get outlook for /i.test(trimmed);\n  });\n  if (cutAt <= 0) return text;\n  return lines.slice(0, cutAt).join('\\n');\n}\n\nfunction stripTrackers(text) {\n  return text.replace(/https?:\\/\\/[^\\s>]+/gi, (url) => {\n    try {\n      const parsed = new URL(url);\n      for (const key of [...parsed.searchParams.keys()]) {\n        if (/^(utm_|mc_|mkt_|fbclid|gclid|vero_)/i.test(key)) parsed.searchParams.delete(key);\n      }\n      if (/pixel|track|open\\.gif|spacer/i.test(parsed.pathname)) return '';\n      return parsed.toString();\n    } catch {\n      return url;\n    }\n  });\n}\n\nfunction normalizeEmail(raw) {\n  const source = raw && raw.body && (raw.body.text || raw.body.textPlain || raw.body.subject || raw.body.from)\n    ? raw.body\n    : (raw || {});\n  const headers = headerMap(source);\n  const plain = String(source.textPlain || source.text || source.body || '').trim();\n  const html = String(source.textHtml || source.html || '').trim();\n  let body = plain || htmlToText(html);\n  body = body.replace(/\\r\\n/g, '\\n').replace(/\\u00a0/g, ' ');\n  body = cutQuotedChain(body);\n  body = cutSignature(body);\n  body = stripTrackers(body);\n  body = body.replace(/[ \\t]+\\n/g, '\\n').replace(/[ \\t]{2,}/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim();\n  if (body.length > 8000) body = body.slice(0, 8000);\n\n  const from = parseAddress(source.from || headers.from || '');\n  const to = parseAddress(source.to || headers.to || '');\n  const messageId = String(headers['message-id'] || source.message_id || '').trim().replace(/^<|>$/g, '');\n  return {\n    message_id: messageId,\n    from_address: from.address,\n    from_name: from.name,\n    to_address: to.address,\n    subject: String(source.subject || headers.subject || '').replace(/\\s+/g, ' ').trim(),\n    body,\n    in_reply_to: String(headers['in-reply-to'] || '').trim(),\n    references_header: String(headers.references || '').trim(),\n    headers,\n    received_at: isoOrNull(source.date || headers.date),\n  };\n}\n\nconst mail = normalizeEmail($json);\nif (!mail.message_id) {\n  const text = [mail.from_address, mail.subject, mail.body].join('|');\n  let hash = 0;\n  for (let i = 0; i < text.length; i += 1) hash = Math.imul(31, hash) + text.charCodeAt(i) | 0;\n  mail.message_id = 'generado-' + (hash >>> 0).toString(16);\n}\nreturn { json: mail };\n",
+        "jsCode": "'use strict';\n\n// Convierte el correo del nodo IMAP (o del webhook de prueba) en texto limpio.\n// El HTML, la firma y la cadena de respuestas no deben llegar al modelo.\n\nconst crypto = require('crypto');\n\nfunction decodeEntities(value) {\n  return String(value || '')\n    .replace(/&nbsp;/gi, ' ')\n    .replace(/&amp;/gi, '&')\n    .replace(/&lt;/gi, '<')\n    .replace(/&gt;/gi, '>')\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;/gi, \"'\")\n    .replace(/&#(\\d+);/g, (_, n) => String.fromCharCode(Number(n)));\n}\n\nfunction htmlToText(html) {\n  let text = String(html || '');\n  text = text.replace(/<script[\\s\\S]*?<\\/script>/gi, ' ');\n  text = text.replace(/<style[\\s\\S]*?<\\/style>/gi, ' ');\n  text = text.replace(/<img\\b[^>]*>/gi, ' ');\n  text = text.replace(/<br\\s*\\/?>/gi, '\\n');\n  text = text.replace(/<\\/p>/gi, '\\n');\n  text = text.replace(/<\\/div>/gi, '\\n');\n  text = text.replace(/<\\/tr>/gi, '\\n');\n  text = text.replace(/<[^>]+>/g, ' ');\n  return decodeEntities(text);\n}\n\n// El nodo IMAP en formato \"simple\" deja las cabeceras en metadata como\n// \"valor\". En formato \"resolved\" llegan en headers como \"Clave: valor\".\n// Aquí se queda solo el valor, con la clave en minúsculas.\nfunction headerMap(raw) {\n  const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};\n  const headers = raw.headers && typeof raw.headers === 'object' ? raw.headers : {};\n  const merged = {};\n  for (const [key, value] of Object.entries({ ...metadata, ...headers })) {\n    const name = String(key).toLowerCase();\n    let text = Array.isArray(value) ? value.join(' ') : String(value ?? '');\n    const prefix = name + ':';\n    if (text.toLowerCase().startsWith(prefix)) text = text.slice(prefix.length);\n    merged[name] = text.replace(/\\s+/g, ' ').trim();\n  }\n  return merged;\n}\n\nfunction isoOrNull(value) {\n  const time = Date.parse(value || '');\n  if (!Number.isFinite(time)) return null;\n  return new Date(time).toISOString();\n}\n\nfunction parseAddress(value) {\n  // Formato \"resolved\" de mailparser: { value: [{ address, name }], text }.\n  if (value && typeof value === 'object') {\n    const first = Array.isArray(value.value) ? value.value[0] : null;\n    if (first && first.address) return { address: String(first.address).trim().toLowerCase(), name: String(first.name || '').trim() };\n    value = value.text || '';\n  }\n  const text = String(value || '').replace(/[\\r\\n]+/g, ' ').trim();\n  const match = text.match(/<([^>]+)>/);\n  const address = (match ? match[1] : text).trim().toLowerCase();\n  const name = match ? text.slice(0, match.index).replace(/\"/g, '').trim() : '';\n  return { address, name };\n}\n\nfunction cutQuotedChain(text) {\n  const markers = [\n    /^-----Original Message-----/im,\n    /^_{5,}\\s*$/m,\n    /^On .+wrote:\\s*$/im,\n    /^El .+escribi[oó]:\\s*$/im,\n    /^From:\\s.+\\nSent:\\s/im,\n    /^De:\\s.+\\nEnviado(?: el)?:\\s/im,\n    /^>+ ?On .+wrote:\\s*$/im,\n  ];\n  let cut = text.length;\n  for (const marker of markers) {\n    const found = marker.exec(text);\n    if (found && found.index < cut) cut = found.index;\n  }\n  const kept = text.slice(0, cut);\n  return kept\n    .split('\\n')\n    .filter((line) => !/^\\s*>/.test(line))\n    .join('\\n');\n}\n\nfunction cutSignature(text) {\n  const lines = text.split('\\n');\n  const cutAt = lines.findIndex((line) => {\n    const trimmed = line.trim();\n    return trimmed === '--' || trimmed === '—' || /^enviado desde mi /i.test(trimmed) || /^sent from my /i.test(trimmed) || /^get outlook for /i.test(trimmed);\n  });\n  if (cutAt <= 0) return text;\n  return lines.slice(0, cutAt).join('\\n');\n}\n\nfunction stripTrackers(text) {\n  return text.replace(/https?:\\/\\/[^\\s>]+/gi, (url) => {\n    try {\n      const parsed = new URL(url);\n      for (const key of [...parsed.searchParams.keys()]) {\n        if (/^(utm_|mc_|mkt_|fbclid|gclid|vero_)/i.test(key)) parsed.searchParams.delete(key);\n      }\n      if (/pixel|track|open\\.gif|spacer/i.test(parsed.pathname)) return '';\n      return parsed.toString();\n    } catch {\n      return url;\n    }\n  });\n}\n\nfunction sha256(text) {\n  return crypto.createHash('sha256').update(String(text)).digest('hex');\n}\n\n// Clave de idempotencia. Si el correo trae Message-ID, es ese. Si no lo trae,\n// se calcula con remitente, destinatario, fecha, asunto y cuerpo: el mismo\n// correo leído dos veces da la misma clave y no se procesa dos veces.\n// Un Message-ID absurdo de largo se resume para que el índice único no falle.\nfunction messageKey(rawId, mail) {\n  const id = String(rawId || '').replace(/\\s+/g, '').replace(/^<|>$/g, '');\n  if (id && id.length <= 400) return { message_id: id, message_id_generated: false };\n  if (id) return { message_id: 'largo-' + sha256(id).slice(0, 40), message_id_generated: true };\n  const seed = [mail.from_address, mail.to_address, mail.received_at || '', mail.subject, mail.body].join('\\n');\n  return { message_id: 'generado-' + sha256(seed).slice(0, 40), message_id_generated: true };\n}\n\nfunction normalizeEmail(raw) {\n  const source = raw && raw.body && typeof raw.body === 'object' && (raw.body.text || raw.body.textPlain || raw.body.subject || raw.body.from)\n    ? raw.body\n    : (raw || {});\n  const headers = headerMap(source);\n  const plain = String(source.textPlain || source.text || (typeof source.body === 'string' ? source.body : '') || '').trim();\n  const html = String(source.textHtml || (typeof source.html === 'string' ? source.html : '') || '').trim();\n  let body = plain || htmlToText(html);\n  body = body.replace(/\\r\\n/g, '\\n').replace(/ /g, ' ');\n  body = cutQuotedChain(body);\n  body = cutSignature(body);\n  body = stripTrackers(body);\n  body = body.replace(/[ \\t]+\\n/g, '\\n').replace(/[ \\t]{2,}/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim();\n  if (body.length > 8000) body = body.slice(0, 8000);\n\n  const from = parseAddress(source.from || headers.from || '');\n  const to = parseAddress(source.to || headers.to || '');\n  const mail = {\n    from_address: from.address,\n    from_name: from.name.slice(0, 200),\n    to_address: to.address,\n    subject: String(source.subject || headers.subject || '').replace(/\\s+/g, ' ').trim().slice(0, 500),\n    body,\n    in_reply_to: String(headers['in-reply-to'] || source.inReplyTo || '').trim().slice(0, 1000),\n    references_header: String(headers.references || (Array.isArray(source.references) ? source.references.join(' ') : source.references) || '').trim().slice(0, 4000),\n    headers,\n    received_at: isoOrNull(source.date || headers.date),\n  };\n  const key = messageKey(headers['message-id'] || source.messageId || source.message_id, mail);\n  return { message_id: key.message_id, message_id_generated: key.message_id_generated, ...mail };\n}\n\nreturn { json: normalizeEmail($json) };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "4063f2bb-65af-5e43-9f12-121ffbff2a26",
@@ -172,11 +160,11 @@
         740,
         400
       ],
-      "notes": "Quita HTML, rastreadores, firma y respuestas citadas."
+      "notes": "Quita HTML, rastreadores, firma y respuestas citadas. Sin Message-ID, calcula uno estable (generado-...)."
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// El cuerpo de un correo es texto de un desconocido. Estas reglas cortan\n// autorespuestas y marcan intentos de inyección antes de gastar el modelo.\n\nconst INJECTION_PATTERNS = [\n  /ignora (tus |las )?(instrucciones|reglas)/i,\n  /ignore (all |any )?(previous|prior|above) instructions/i,\n  /olvida (las |tus )?(reglas|instrucciones)/i,\n  /system prompt/i,\n  /you are now/i,\n  /act[uú]a como si no tuvieras/i,\n  /responde que (le |nos )?devolvemos el dinero/i,\n];\n\nfunction looksLikeNoReply(address) {\n  const value = String(address || '').toLowerCase();\n  return /(^|[^a-z])(no-?reply|mailer-daemon|postmaster)@/.test(value);\n}\n\nfunction inspectMail(mail, supportAddress) {\n  const headers = mail.headers || {};\n  const autoSubmitted = String(headers['auto-submitted'] || '').toLowerCase();\n  const reasons = [];\n  if (autoSubmitted && autoSubmitted !== 'no') reasons.push('auto-submitted');\n  if (headers['x-autoreply'] || headers['x-autorespond'] || headers['x-auto-response-suppress']) {\n    reasons.push('x-autoreply');\n  }\n  if (headers['list-id']) reasons.push('list-id');\n  const precedence = String(headers.precedence || '').toLowerCase();\n  if (['bulk', 'list', 'junk'].includes(precedence)) reasons.push('precedence');\n  if (looksLikeNoReply(mail.from_address)) reasons.push('no-reply');\n  if (supportAddress && mail.from_address === String(supportAddress).toLowerCase()) reasons.push('propio');\n\n  const blob = `${mail.subject}\\n${mail.body}`;\n  const injection = INJECTION_PATTERNS.some((pattern) => pattern.test(blob));\n  return {\n    ignore: reasons.length > 0,\n    ignore_reason: reasons.join(','),\n    injection,\n  };\n}\n\nconst config = $('Configuración').first().json;\nconst verdict = inspectMail($json, config.support_address);\nreturn { json: { ...$json, ...verdict } };\n",
+        "jsCode": "'use strict';\n\n// El cuerpo de un correo es texto de un desconocido. Estas reglas cortan\n// autorespuestas y marcan intentos de inyección antes de gastar el modelo.\n\nconst INJECTION_PATTERNS = [\n  /ignora (tus |las |todas las )?(instrucciones|reglas)/i,\n  /ignore (all |any )?(previous|prior|above) instructions/i,\n  /disregard (all |any )?(previous|prior|above) instructions/i,\n  /olvida (las |tus |todas las )?(reglas|instrucciones)/i,\n  /system prompt/i,\n  /you are now/i,\n  /eres (ahora )?(otro|un nuevo) asistente/i,\n  /act[uú]a como si no tuvieras/i,\n  /responde que (le |nos )?devolvemos el dinero/i,\n  // Intento de cerrar el bloque de datos y escribir fuera de él.\n  /<\\s*\\/?\\s*(correo_no_confiable|fuentes_rag|system|assistant)\\b/i,\n];\n\n// Una sola dirección, sin comas ni espacios. Si el From trae dos direcciones\n// o algo raro, no se contesta: la respuesta podría salir a un tercero.\nconst ADDRESS = /^[^\\s@,;:<>()[\\]\"'\\\\]+@[^\\s@,;:<>()[\\]\"'\\\\]+\\.[^\\s@,;:<>()[\\]\"'\\\\]+$/;\n\nfunction isValidAddress(address) {\n  const value = String(address || '');\n  return value.length <= 254 && ADDRESS.test(value);\n}\n\nfunction looksLikeNoReply(address) {\n  const value = String(address || '').toLowerCase();\n  return /(^|[^a-z])(no-?reply|mailer-daemon|postmaster)@/.test(value);\n}\n\nfunction inspectMail(mail, supportAddress) {\n  const headers = mail.headers || {};\n  const autoSubmitted = String(headers['auto-submitted'] || '').toLowerCase();\n  const reasons = [];\n  if (autoSubmitted && autoSubmitted !== 'no') reasons.push('auto-submitted');\n  if (headers['x-autoreply'] || headers['x-autorespond'] || headers['x-auto-response-suppress']) {\n    reasons.push('x-autoreply');\n  }\n  if (headers['list-id']) reasons.push('list-id');\n  const precedence = String(headers.precedence || '').toLowerCase();\n  if (['bulk', 'list', 'junk', 'auto_reply'].includes(precedence)) reasons.push('precedence');\n  if (!isValidAddress(mail.from_address)) reasons.push('remitente-invalido');\n  if (looksLikeNoReply(mail.from_address)) reasons.push('no-reply');\n  if (supportAddress && mail.from_address === String(supportAddress).toLowerCase()) reasons.push('propio');\n\n  const blob = `${mail.subject}\\n${mail.body}`;\n  const injection = INJECTION_PATTERNS.some((pattern) => pattern.test(blob));\n  return {\n    ignore: reasons.length > 0,\n    ignore_reason: reasons.join(','),\n    injection,\n  };\n}\n\nconst config = $('Configuración').first().json;\nconst verdict = inspectMail($json, config.support_address);\nreturn { json: { ...$json, ...verdict } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "21a3539f-bb3c-5925-abf1-548ff7162f3a",
@@ -187,7 +175,7 @@
         960,
         400
       ],
-      "notes": "Autorespuestas, listas y no-reply. Marca inyección, no la obedece."
+      "notes": "Autorespuestas, listas, no-reply y remitentes raros. Marca inyección, no la obedece."
     },
     {
       "parameters": {
@@ -226,10 +214,10 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO mail_messages\n  (message_id, from_address, from_name, to_address, subject, body_normalized, status, reasoning, received_at)\nVALUES ($1, $2, $3, $4, $5, $6, 'ignorado_autorespuesta', $7, NULLIF($8::text, '')::timestamptz)\nON CONFLICT (message_id) DO NOTHING\nRETURNING id",
+        "query": "WITH ins AS (\n  INSERT INTO mail_messages\n    (message_id, from_address, from_name, to_address, subject, body_normalized, status, reasoning, received_at)\n  VALUES ($1, $2, $3, $4, $5, $6, 'ignorado_autorespuesta', $7, NULLIF($8::text, '')::timestamptz)\n  ON CONFLICT (message_id) DO NOTHING\n  RETURNING id\n)\nSELECT (SELECT id::text FROM ins) AS id",
         "options": {
           "queryBatching": "independently",
-          "queryReplacement": "={{ [$json.message_id, $json.from_address, $json.from_name, $json.to_address, $json.subject, $json.body, $json.ignore_reason, $json.received_at] }}"
+          "queryReplacement": "={{ [$json.message_id, $json.from_address, $json.from_name, $json.to_address, $json.subject, $json.body, $json.ignore_reason, $json.received_at || ''] }}"
         }
       },
       "id": "10d3a605-6939-5f2c-a3a6-f31c5950e5c8",
@@ -238,8 +226,14 @@
       "typeVersion": 2.5,
       "position": [
         1400,
-        560
+        580
       ],
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
       "notes": "La autorespuesta queda escrita y no se contesta.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -248,24 +242,44 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT EXISTS(SELECT 1 FROM mail_messages WHERE message_id = $1) AS duplicate, $1::text AS message_id",
+        "query": "WITH ins AS (\n  INSERT INTO mail_messages\n    (message_id, from_address, from_name, to_address, subject, body_normalized,\n     in_reply_to, references_header, status, injection_flag, received_at)\n  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'procesando', $9::boolean, NULLIF($10::text, '')::timestamptz)\n  ON CONFLICT (message_id) DO NOTHING\n  RETURNING id\n)\nSELECT (SELECT id::text FROM ins) AS id",
         "options": {
           "queryBatching": "independently",
-          "queryReplacement": "={{ [$json.message_id] }}"
+          "queryReplacement": "={{ [$json.message_id, $json.from_address, $json.from_name, $json.to_address, $json.subject, $json.body, $json.in_reply_to, $json.references_header, $json.injection, $json.received_at || ''] }}"
         }
       },
-      "id": "19289f98-2398-5473-801c-5d6cb3f22ae0",
-      "name": "¿Ya existe?",
+      "id": "f39f4b59-4afc-5641-958d-21cff466f5bd",
+      "name": "Reservar",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
         1400,
-        280
+        300
       ],
-      "notes": "La clave es el Message-ID. Un reenvío del mismo id no sigue.",
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
+      "notes": "La clave es el Message-ID. Dos ejecuciones a la vez: solo una consigue la fila.",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const mail = $('Filtros').item.json;\nreturn { json: { ...mail, id: $json.id || null, duplicate: !$json.id } };\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "887a49f9-47b8-52fd-9e19-c6a23c0e9d1c",
+      "name": "Con reserva",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        300
+      ]
     },
     {
       "parameters": {
@@ -296,8 +310,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1620,
-        280
+        1840,
+        300
       ]
     },
     {
@@ -314,9 +328,15 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        1840,
+        2060,
         160
       ],
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
       "notes": "Auditoría del segundo intento. No llama al modelo.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -346,9 +366,15 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1840,
+        2060,
         400
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "RAG API Key"
+        }
+      },
       "notes": "La respuesta tiene que salir de la base del episodio 2.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -357,7 +383,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const email = $('Filtros').item.json;\nlet parsed = [];\nconst raw = $json.rag_raw || $json.data || '';\nif (!$json.error && raw) {\n  try { parsed = JSON.parse(raw); } catch (error) { parsed = []; }\n}\nif (parsed && parsed.error) parsed = [];\nif (!Array.isArray(parsed)) parsed = [];\nconst sources = parsed.slice(0, 5).map((row) => ({\n  document_id: row.document_id || null,\n  title: row.title || '',\n  canonical_url: row.canonical_url || '',\n  score: Number(row.score || 0),\n  content: String(row.content || '').slice(0, 700),\n  source_type: row.source_type || '',\n  chunk_index: row.chunk_index,\n})).sort((a, b) => b.score - a.score);\nreturn { json: { ...email, sources, source_ids: sources.map((row) => row.document_id).filter(Boolean).join(',') } };\n",
+        "jsCode": "const email = $('Con reserva').item.json;\nlet parsed = [];\nconst raw = $json.rag_raw || $json.data || '';\nif (!$json.error && raw) {\n  try { parsed = JSON.parse(raw); } catch (error) { parsed = []; }\n}\nif (parsed && parsed.error) parsed = [];\nif (!Array.isArray(parsed)) parsed = [];\nconst sources = parsed.slice(0, 5).map((row) => ({\n  document_id: row.document_id || null,\n  title: String(row.title || '').slice(0, 300),\n  canonical_url: String(row.canonical_url || '').slice(0, 500),\n  score: Number(row.score || 0),\n  content: String(row.content || '').slice(0, 700),\n  source_type: row.source_type || '',\n  chunk_index: row.chunk_index,\n})).sort((a, b) => b.score - a.score);\nconst ids = sources.map((row) => row.document_id).filter((id) => /^[0-9a-f-]{36}$/i.test(String(id)));\nreturn { json: { ...email, sources, source_ids: ids.join(',') } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "c40a8e1e-724e-5a0c-a6d3-d4498cfc28cb",
@@ -365,10 +391,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2080,
+        2300,
         400
       ],
-      "notes": "Junta los fragmentos. Si el RAG falla, la lista queda vacía y el correo sigue."
+      "notes": "Junta los fragmentos. Si el RAG falla, la lista queda vacía y el correo va a una persona."
     },
     {
       "parameters": {
@@ -399,7 +425,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2300,
+        2520,
         400
       ]
     },
@@ -417,9 +443,15 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        2520,
+        2740,
         280
       ],
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
       "notes": "El webhook del episodio 2 no trae la fecha. Se lee de knowledge_documents.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -435,13 +467,13 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2740,
+        2960,
         280
       ]
     },
     {
       "parameters": {
-        "jsCode": "const email = $json.sources ? $json : $('Unir fuentes').item.json;\nconst sources = email.sources || [];\nconst packed = sources.map((source, index) => (\n  '[' + (index + 1) + '] ' + source.title + ' | ' + (source.updated_at || 'sin fecha') + ' | ' + source.canonical_url + '\\n' + source.content\n)).join('\\n\\n');\nconst userBlock = [\n  '<correo_no_confiable>',\n  'asunto: ' + email.subject,\n  'de: ' + email.from_address,\n  'cuerpo:',\n  email.body,\n  '</correo_no_confiable>',\n  '<fuentes_rag>',\n  packed || '(sin fragmentos)',\n  '</fuentes_rag>',\n].join('\\n');\nreturn { json: { ...email, user_block: userBlock } };\n",
+        "jsCode": "'use strict';\n\n// Mensaje de usuario para el modelo. Las instrucciones van en el prompt de\n// sistema (prompts/clasificador.md). Aquí solo hay datos, entre marcas.\n// Si el correo o una fuente traen las propias marcas, se borran: así nadie\n// puede cerrar el bloque <correo_no_confiable> y escribir fuera de él.\n\nconst DATA_TAGS = /<\\s*\\/?\\s*(correo_no_confiable|fuentes_rag)\\b[^>]*>/gi;\n\nfunction neutralize(value) {\n  return String(value ?? '').replace(DATA_TAGS, '[marca eliminada]');\n}\n\nfunction buildUserBlock(email, sources) {\n  const list = Array.isArray(sources) ? sources : [];\n  const packed = list.map((source, index) => (\n    '[' + (index + 1) + '] ' + neutralize(source.title) + ' | ' + (source.updated_at || 'sin fecha') + ' | ' + neutralize(source.canonical_url) + '\\n' + neutralize(source.content)\n  )).join('\\n\\n');\n  return [\n    '<correo_no_confiable>',\n    'asunto: ' + neutralize(email.subject),\n    'de: ' + neutralize(email.from_address),\n    'cuerpo:',\n    neutralize(email.body),\n    '</correo_no_confiable>',\n    '<fuentes_rag>',\n    packed || '(sin fragmentos)',\n    '</fuentes_rag>',\n  ].join('\\n');\n}\n\nconst email = $json.sources ? $json : $('Unir fuentes').item.json;\nreturn { json: { ...email, user_block: buildUserBlock(email, email.sources || []) } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "07e411e3-8b84-5f9d-aa70-321722bc3725",
@@ -449,10 +481,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2960,
+        3180,
         400
       ],
-      "notes": "Instrucciones y datos van separados. El correo entra como dato."
+      "notes": "Instrucciones y datos van separados. El correo entra como dato y no puede cerrar su marca."
     },
     {
       "parameters": {
@@ -462,7 +494,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $('Configuración').first().json.llm_model, temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Configuración').first().json.prompt }, { role: 'user', content: $json.user_block } ] }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $('Configuración').first().json.llm_model, temperature: 0, max_tokens: 1200, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Configuración').first().json.prompt }, { role: 'user', content: $json.user_block } ] }, /deepseek\\.com/.test($('Configuración').first().json.llm_base_url) ? { thinking: { type: 'disabled' } } : {})) }}",
         "options": {
           "timeout": 120000,
           "response": {
@@ -477,9 +509,15 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        3180,
+        3400,
         400
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "LLM API"
+        }
+      },
       "notes": "JSON estricto. Si no parsea, el correo no se responde solo.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -488,7 +526,7 @@
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// La decisión final no se fía del modelo. Si el JSON no parsea, si huele a\n// inyección o si el tema tiene consecuencias, no se responde solo.\n\nconst CATEGORIES = ['consulta_frecuente', 'bug', 'incidencia_urgente', 'lead', 'spam', 'revision'];\n\nconst GRANT_PATTERNS = [\n  /te devolvemos/i,\n  /le devolvemos el dinero/i,\n  /reembolso aprobado/i,\n  /hemos abonado/i,\n  /refund approved/i,\n  /we will refund/i,\n  /full refund/i,\n];\n\nfunction clamp(value) {\n  const number = Number(value);\n  if (!Number.isFinite(number)) return 0;\n  return Math.min(1, Math.max(0, number));\n}\n\nfunction extractJson(text) {\n  const raw = String(text || '').trim();\n  if (!raw) return null;\n  try {\n    return JSON.parse(raw);\n  } catch {\n    const start = raw.indexOf('{');\n    const end = raw.lastIndexOf('}');\n    if (start >= 0 && end > start) {\n      try {\n        return JSON.parse(raw.slice(start, end + 1));\n      } catch {\n        return null;\n      }\n    }\n    return null;\n  }\n}\n\nfunction llmPayload(response) {\n  if (!response) return '';\n  if (typeof response === 'string') return response;\n  const content = response.choices && response.choices[0] && response.choices[0].message\n    ? response.choices[0].message.content\n    : response.content;\n  return typeof content === 'string' ? content : JSON.stringify(response);\n}\n\nfunction isSensitive(text, topics) {\n  const haystack = String(text || '').toLowerCase();\n  return topics.some((topic) => topic && haystack.includes(String(topic).toLowerCase()));\n}\n\nfunction coversQuestion(body, sources) {\n  const normalize = (value) => String(value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n  const tokens = normalize(body).split(/[^a-z0-9]+/).filter((word) => word.length > 4);\n  if (tokens.length === 0) return false;\n  const blob = normalize((sources || []).slice(0, 2).map((source) => `${source.title || ''} ${source.content || ''}`).join(' '));\n  const hits = tokens.filter((word) => blob.includes(word));\n  return hits.length >= 2 || (hits.length === 1 && tokens.length <= 3);\n}\n\nfunction sourcesAllowGrant(sources) {\n  const blob = (sources || []).map((source) => `${source.title || ''}\\n${source.content || ''}`).join('\\n');\n  return /reembolso íntegro|devolución del dinero/i.test(blob);\n}\n\nfunction outputGrantsMoney(draft, sources) {\n  if (sourcesAllowGrant(sources)) return false;\n  return GRANT_PATTERNS.some((pattern) => pattern.test(String(draft || '')));\n}\n\nfunction decide(input, config) {\n  const threshold = Number(config.confidence_threshold ?? 0.75);\n  const minScore = Number(config.min_rag_score ?? 0.45);\n  const topics = String(config.sensitive_topics || '')\n    .split(',')\n    .map((item) => item.trim())\n    .filter(Boolean);\n  const sources = Array.isArray(input.sources) ? input.sources : [];\n  const parsed = input.parsed && typeof input.parsed === 'object' ? input.parsed : null;\n  const topScore = Number(sources[0] && sources[0].score) || 0;\n\n  if (!parsed) {\n    return {\n      category: 'revision',\n      confidence: 0,\n      draft_reply: '',\n      reasoning: 'El modelo no devolvió JSON válido. Pasa a una persona.',\n      route: 'approval',\n      status: 'revision_humana',\n      sensitive: false,\n      injection: Boolean(input.injection),\n      blocked: false,\n    };\n  }\n\n  let category = CATEGORIES.includes(parsed.categoria) ? parsed.categoria : 'revision';\n  let confidence = clamp(parsed.confianza);\n  let draft = String(parsed.borrador_respuesta || '').trim();\n  const reasoning = String(parsed.razonamiento || '').trim();\n  const sensitive = isSensitive(`${input.subject}\\n${input.body}\\n${draft}`, topics);\n  const grants = outputGrantsMoney(draft, sources);\n  const injection = Boolean(input.injection);\n\n  if (injection || grants) {\n    return {\n      category: 'revision',\n      confidence: Math.min(confidence, 0.2),\n      draft_reply: 'Este correo pide saltarse las instrucciones o promete una devolución que no está en la base de conocimiento. No se envía nada automático.',\n      reasoning: reasoning || 'Comprobación de salida: el correo no puede dar órdenes.',\n      route: 'approval',\n      status: 'esperando_aprobacion',\n      sensitive,\n      injection: true,\n      blocked: true,\n    };\n  }\n\n  if (category === 'spam') {\n    return { category, confidence, draft_reply: '', reasoning, route: 'spam', status: 'descartado', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'bug') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'bug', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'incidencia_urgente') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'urgent', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'lead') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'lead', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n\n  const vague = String(input.body || '').trim().length < 40;\n  if (vague) confidence = Math.min(confidence, 0.55);\n\n  if (sensitive || category !== 'consulta_frecuente' || confidence < threshold || topScore < minScore || sources.length === 0 || !coversQuestion(input.body, sources)) {\n    return {\n      category: category === 'consulta_frecuente' ? category : 'revision',\n      confidence,\n      draft_reply: draft,\n      reasoning,\n      route: 'approval',\n      status: 'esperando_aprobacion',\n      sensitive,\n      injection: false,\n      blocked: false,\n    };\n  }\n\n  return {\n    category,\n    confidence,\n    draft_reply: draft,\n    reasoning,\n    route: 'auto',\n    status: 'pendiente',\n    sensitive: false,\n    injection: false,\n    blocked: false,\n  };\n}\n\nconst base = $('Preparar bloque').item.json;\nconst config = $('Configuración').first().json;\nlet raw = '';\nlet parsed = null;\nif (!$json.error) {\n  raw = llmPayload($json.rag_raw ? $json.rag_raw : $json);\n  parsed = extractJson(raw);\n}\nconst decision = decide({\n  subject: base.subject,\n  body: base.body,\n  injection: base.injection,\n  sources: base.sources || [],\n  parsed,\n}, config);\nreturn { json: { ...base, ...decision, model_raw: String(raw).slice(0, 2000) } };\n",
+        "jsCode": "'use strict';\n\n// La decisión final no se fía del modelo. Si el JSON no parsea, si huele a\n// inyección o si el tema tiene consecuencias, no se responde solo.\n// Un correo bloqueado (inyección o promesa de dinero) se queda SIN borrador:\n// en Telegram no hay botón Aprobar y solo sale lo que escriba una persona.\n\nconst CATEGORIES = ['consulta_frecuente', 'bug', 'incidencia_urgente', 'lead', 'spam', 'revision'];\n\nconst GRANT_PATTERNS = [\n  /te devolvemos/i,\n  /le devolvemos el dinero/i,\n  /reembolso aprobado/i,\n  /hemos abonado/i,\n  /refund approved/i,\n  /we will refund/i,\n  /full refund/i,\n];\n\nfunction clamp(value) {\n  const number = Number(value);\n  if (!Number.isFinite(number)) return 0;\n  return Math.min(1, Math.max(0, number));\n}\n\nfunction extractJson(text) {\n  const raw = String(text || '').trim();\n  if (!raw) return null;\n  try {\n    return JSON.parse(raw);\n  } catch {\n    const start = raw.indexOf('{');\n    const end = raw.lastIndexOf('}');\n    if (start >= 0 && end > start) {\n      try {\n        return JSON.parse(raw.slice(start, end + 1));\n      } catch {\n        return null;\n      }\n    }\n    return null;\n  }\n}\n\nfunction llmPayload(response) {\n  if (!response) return '';\n  if (typeof response === 'string') return response;\n  const content = response.choices && response.choices[0] && response.choices[0].message\n    ? response.choices[0].message.content\n    : response.content;\n  return typeof content === 'string' ? content : JSON.stringify(response);\n}\n\n// Trozos del prompt o de las marcas de datos en el borrador: el modelo está\n// repitiendo instrucciones o el correo intentó sacarlas. No se envía.\nconst LEAK_PATTERNS = [\n  /correo_no_confiable/i,\n  /fuentes_rag/i,\n  /eres el clasificador de soporte/i,\n  /esquema exacto/i,\n];\n\nconst MAX_DRAFT = 4000;\n\n// Valida la forma del JSON del modelo. Devuelve null si no es un objeto con\n// una categoría en texto y una confianza numérica: eso cuenta como JSON roto.\nfunction validateModelOutput(parsed) {\n  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;\n  if (typeof parsed.categoria !== 'string') return null;\n  const confidence = Number(parsed.confianza);\n  if (parsed.confianza === null || parsed.confianza === '' || !Number.isFinite(confidence)) return null;\n  const text = (value) => (typeof value === 'string' ? value.trim() : '');\n  return {\n    categoria: CATEGORIES.includes(parsed.categoria.trim()) ? parsed.categoria.trim() : 'revision',\n    confianza: clamp(confidence),\n    borrador: text(parsed.borrador_respuesta).slice(0, MAX_DRAFT),\n    razonamiento: text(parsed.razonamiento).slice(0, 1000),\n  };\n}\n\nfunction leaksPrompt(draft) {\n  return LEAK_PATTERNS.some((pattern) => pattern.test(String(draft || '')));\n}\n\nfunction isSensitive(text, topics) {\n  const haystack = String(text || '').toLowerCase();\n  return topics.some((topic) => topic && haystack.includes(String(topic).toLowerCase()));\n}\n\nfunction coversQuestion(body, sources) {\n  const normalize = (value) => String(value || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n  const tokens = normalize(body).split(/[^a-z0-9]+/).filter((word) => word.length > 4);\n  if (tokens.length === 0) return false;\n  const blob = normalize((sources || []).slice(0, 2).map((source) => `${source.title || ''} ${source.content || ''}`).join(' '));\n  const hits = tokens.filter((word) => blob.includes(word));\n  return hits.length >= 2 || (hits.length === 1 && tokens.length <= 3);\n}\n\nfunction sourcesAllowGrant(sources) {\n  const blob = (sources || []).map((source) => `${source.title || ''}\\n${source.content || ''}`).join('\\n');\n  return /reembolso íntegro|devolución del dinero/i.test(blob);\n}\n\nfunction outputGrantsMoney(draft, sources) {\n  if (sourcesAllowGrant(sources)) return false;\n  return GRANT_PATTERNS.some((pattern) => pattern.test(String(draft || '')));\n}\n\nfunction decide(input, config) {\n  const threshold = Number(config.confidence_threshold ?? 0.75);\n  const minScore = Number(config.min_rag_score ?? 0.45);\n  const topics = String(config.sensitive_topics || '')\n    .split(',')\n    .map((item) => item.trim())\n    .filter(Boolean);\n  const sources = Array.isArray(input.sources) ? input.sources : [];\n  const parsed = validateModelOutput(input.parsed);\n  const topScore = Number(sources[0] && sources[0].score) || 0;\n\n  if (!parsed) {\n    return {\n      category: 'revision',\n      confidence: 0,\n      draft_reply: '',\n      reasoning: 'El modelo no devolvió JSON válido. Pasa a una persona.',\n      route: 'approval',\n      status: 'revision_humana',\n      sensitive: false,\n      injection: Boolean(input.injection),\n      blocked: false,\n    };\n  }\n\n  const category = parsed.categoria;\n  let confidence = parsed.confianza;\n  const draft = parsed.borrador;\n  const reasoning = parsed.razonamiento;\n  const sensitive = isSensitive(`${input.subject}\\n${input.body}\\n${draft}`, topics);\n  const grants = outputGrantsMoney(draft, sources);\n  const leak = leaksPrompt(draft);\n  const injection = Boolean(input.injection);\n\n  if (injection || grants || leak) {\n    const why = injection\n      ? 'El correo intenta dar instrucciones al sistema.'\n      : grants\n        ? 'El borrador prometía una devolución que no está en la base de conocimiento.'\n        : 'El borrador repetía instrucciones internas.';\n    // El borrador del modelo se tira: pudo escribirlo el atacante. Lo que vea\n    // el remitente lo escribirá una persona con el botón Editar.\n    return {\n      category: 'revision',\n      confidence: Math.min(confidence, 0.2),\n      draft_reply: '',\n      reasoning: (why + ' No hay borrador: responde con Editar o rechaza. ' + reasoning).trim().slice(0, 1000),\n      route: 'approval',\n      status: 'esperando_aprobacion',\n      sensitive,\n      injection: true,\n      blocked: true,\n    };\n  }\n\n  if (category === 'spam') {\n    return { category, confidence, draft_reply: '', reasoning, route: 'spam', status: 'descartado', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'bug') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'bug', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'incidencia_urgente') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'urgent', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n  if (category === 'lead') {\n    return { category, confidence, draft_reply: draft, reasoning, route: 'lead', status: 'pendiente', sensitive, injection: false, blocked: false };\n  }\n\n  const vague = String(input.body || '').trim().length < 40;\n  if (vague) confidence = Math.min(confidence, 0.55);\n\n  if (!draft || sensitive || category !== 'consulta_frecuente' || confidence < threshold || topScore < minScore || sources.length === 0 || !coversQuestion(input.body, sources)) {\n    return {\n      category: category === 'consulta_frecuente' ? category : 'revision',\n      confidence,\n      draft_reply: draft,\n      reasoning,\n      route: 'approval',\n      status: 'esperando_aprobacion',\n      sensitive,\n      injection: false,\n      blocked: false,\n    };\n  }\n\n  return {\n    category,\n    confidence,\n    draft_reply: draft,\n    reasoning,\n    route: 'auto',\n    status: 'pendiente',\n    sensitive: false,\n    injection: false,\n    blocked: false,\n  };\n}\n\nconst base = $('Preparar bloque').item.json;\nconst config = $('Configuración').first().json;\nlet raw = '';\nlet parsed = null;\nif (!$json.error) {\n  raw = llmPayload($json);\n  parsed = extractJson(raw);\n}\nconst decision = decide({\n  subject: base.subject,\n  body: base.body,\n  injection: base.injection,\n  sources: base.sources || [],\n  parsed,\n}, config);\nreturn { json: { ...base, ...decision, model_raw: String(raw).slice(0, 2000) } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "17463077-0f17-55c9-90b2-12da94f188da",
@@ -496,18 +534,18 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3400,
+        3620,
         400
       ],
-      "notes": "Capa de salida: inyección, temas sensibles y JSON roto no se envían solos."
+      "notes": "Capa de salida: inyección, temas sensibles, borrador vacío y JSON roto no se envían solos."
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO mail_messages (\n  message_id, from_address, from_name, to_address, subject, body_normalized,\n  in_reply_to, references_header, category, confidence, draft_reply, reasoning,\n  rag_sources, status, injection_flag, sensitive_flag, received_at\n) VALUES (\n  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, 'pendiente', $14, $15, NULLIF($16::text, '')::timestamptz\n)\nON CONFLICT (message_id) DO NOTHING\nRETURNING id::text AS id, message_id",
+        "query": "WITH upd AS (\n  UPDATE mail_messages\n  SET category = $2, confidence = $3::numeric, draft_reply = $4, reasoning = $5,\n      rag_sources = $6::jsonb, injection_flag = $7::boolean, sensitive_flag = $8::boolean,\n      route = $9, status = 'pendiente'\n  WHERE id = $1::uuid AND status = 'procesando'\n  RETURNING id\n)\nSELECT (SELECT id::text FROM upd) AS id",
         "options": {
           "queryBatching": "independently",
-          "queryReplacement": "={{ [$json.message_id, $json.from_address, $json.from_name, $json.to_address, $json.subject, $json.body, $json.in_reply_to, $json.references_header, $json.category, $json.confidence, $json.draft_reply, $json.reasoning, JSON.stringify($json.sources || []), $json.injection, $json.sensitive, $json.received_at] }}"
+          "queryReplacement": "={{ [$json.id, $json.category, $json.confidence, $json.draft_reply, $json.reasoning, JSON.stringify($json.sources || []), $json.injection, $json.sensitive, $json.route] }}"
         }
       },
       "id": "00ca91f8-d7e2-5153-b169-995ec8fa93a6",
@@ -515,10 +553,16 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        3620,
+        3840,
         400
       ],
-      "notes": "Si el Message-ID ya existe, no devuelve fila y el flujo se para.",
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
+      "notes": "Guarda la decisión y la ruta. La fila pasa a pendiente: el 02, 03a o 04 la recoge.",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
@@ -533,7 +577,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3840,
+        4060,
         400
       ]
     },
@@ -566,7 +610,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4060,
+        4280,
         400
       ]
     },
@@ -598,7 +642,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4280,
+        4500,
         400
       ]
     },
@@ -630,7 +674,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        4500,
+        4720,
         520
       ]
     },
@@ -642,7 +686,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ mail_id: $json.id, route: 'auto', mode: 'auto' }) }}",
+        "jsonBody": "={{ JSON.stringify({ mail_id: $json.id, mode: 'auto' }) }}",
         "options": {
           "timeout": 120000,
           "response": {
@@ -657,9 +701,15 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4720,
+        4940,
         280
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Mail API Key"
+        }
+      },
       "notes": "Dispara el flujo 02. No envía desde aquí.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -674,7 +724,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ mail_id: $json.id, route: 'approval' }) }}",
+        "jsonBody": "={{ JSON.stringify({ mail_id: $json.id }) }}",
         "options": {
           "timeout": 120000,
           "response": {
@@ -689,9 +739,15 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4720,
+        4940,
         460
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Mail API Key"
+        }
+      },
       "notes": "Dispara el flujo 03a y se acaba. No hay nodo Wait.",
       "retryOnFail": true,
       "maxTries": 3,
@@ -721,14 +777,92 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4720,
+        4940,
         660
       ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": null,
+          "name": "Mail API Key"
+        }
+      },
       "notes": "Bug, urgente, lead o spam. El flujo 04 decide.",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000,
       "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "'use strict';\n\n// Textos que salen a Telegram y asuntos de respuesta. Todo lo que viene del\n// correo se escapa: el mensaje va con parse_mode HTML.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction formatSources(sources) {\n  const list = Array.isArray(sources) ? sources.slice(0, 3) : [];\n  if (!list.length) return 'Sin fragmentos en la base de conocimiento.';\n  return list.map((source) => {\n    const title = source.title || 'Documento';\n    const when = source.updated_at ? ` (${String(source.updated_at).slice(0, 10)})` : '';\n    const url = source.canonical_url || source.url || '';\n    return `• ${title}${when}${url ? `\\n  ${url}` : ''}`;\n  }).join('\\n');\n}\n\nfunction approvalMessage(row) {\n  const confidence = Math.round(Number(row.confidence || 0) * 100);\n  const draft = String(row.draft_reply || '').slice(0, 900);\n  const lines = [\n    '<b>Correo para revisar</b>',\n    `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,\n    `Asunto: ${escapeHtml(row.subject)}`,\n    `Categoría: ${escapeHtml(row.category)}`,\n    `Confianza: ${confidence}%`,\n  ];\n  if (row.injection) {\n    lines.push('Aviso: bloqueado. El correo intentó dar instrucciones al sistema o el borrador prometía algo que la base no dice. No hay botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');\n  }\n  if (row.sensitive) lines.push('Aviso: habla de precio, plazo, devolución o datos personales. Hace falta una persona.');\n  if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);\n  lines.push('', '<b>Borrador</b>', escapeHtml(draft || (row.injection ? '(sin borrador: bloqueado)' : '(vacío)')), '', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));\n  return lines.join('\\n').slice(0, 3900);\n}\n\n// Aviso cuando algo falla. Corto y sin el cuerpo del correo.\nfunction failureMessage(what, row, error) {\n  const lines = [\n    `<b>Fallo: ${escapeHtml(what)}</b>`,\n    row && row.from_address ? `De: ${escapeHtml(row.from_address)}` : '',\n    row && row.subject ? `Asunto: ${escapeHtml(String(row.subject).slice(0, 200))}` : '',\n    row && row.id ? `Fila: <code>${escapeHtml(row.id)}</code>` : '',\n    `Error: ${escapeHtml(String(error || 'sin detalle').slice(0, 500))}`,\n  ];\n  if (row && row.hint) lines.push('', escapeHtml(row.hint));\n  return lines.filter((line) => line !== '').join('\\n').slice(0, 3900);\n}\n\nfunction summaryMessage(counts) {\n  const n = (key) => Number(counts[key] || 0);\n  const lines = [\n    '<b>Resumen del correo (últimas 24 h)</b>',\n    `Recibidos: ${n('received')}`,\n    `Respondidos solos: ${n('auto_replied')}`,\n    `Aprobados a mano: ${n('approved')}`,\n    `Rechazados: ${n('rejected')}`,\n    `Leads: ${n('leads')}`,\n    `Issues: ${n('issues')}`,\n    `Spam registrado: ${n('spam')}`,\n    `Urgentes: ${n('urgent')}`,\n    `Autorespuestas ignoradas: ${n('ignored')}`,\n    `Retenidos por bucle: ${n('held')}`,\n    `Esperando aprobación: ${n('waiting')}`,\n    `Aprobaciones vencidas: ${n('expired')}`,\n    `Con error (míralos): ${n('errors')}`,\n    `Atascados más de 1 h: ${n('stuck')}`,\n    `Borrados por retención: ${n('purged')}`,\n  ];\n  return lines.join('\\n');\n}\n\nfunction replySubject(subject) {\n  const clean = String(subject || '').replace(/[\\r\\n]+/g, ' ').trim() || '(sin asunto)';\n  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;\n}\n\nconst mail = $('Con id').item.json;\nconst config = $('Configuración').first().json;\nconst raw = $json.error;\nconst error = String(typeof raw === 'string' ? raw : (raw && (raw.message || raw.description)) || JSON.stringify(raw || 'sin detalle')).slice(0, 400);\nconst target = mail.route === 'auto' ? 'el flujo 02 (mail-reply)' : mail.route === 'approval' ? 'el flujo 03a (mail-approval)' : 'el flujo 04 (mail-action)';\nconst hint = '¿Está activo ' + target + '? ¿n8n_url y la credencial Mail API Key son las mismas en los dos flujos? La fila queda en error_interno.';\nreturn { json: { id: mail.id, target, fallo: error, chat_id: config.telegram_chat_id, text: failureMessage('no se pudo pasar el correo a ' + target, { ...mail, hint }, error) } };\n",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "7f523449-3741-5d80-a0cd-15b5fb01bcc4",
+      "name": "Fallo interno",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5180,
+        840
+      ],
+      "notes": "Las salidas de error de los tres HTTP llegan aquí. No se falla en silencio."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH upd AS (\n  UPDATE mail_messages SET status = 'error_interno'\n  WHERE id = $1::uuid AND status = 'pendiente'\n  RETURNING id\n), log AS (\n  INSERT INTO mail_actions (mail_id, action, detail)\n  VALUES ($1::uuid, 'error_interno', jsonb_build_object('destino', $2::text, 'error', $3::text))\n  RETURNING id\n)\nSELECT (SELECT count(*) FROM upd)::int AS updated",
+        "options": {
+          "queryBatching": "independently",
+          "queryReplacement": "={{ [$json.id, $json.target, $json.fallo] }}"
+        }
+      },
+      "id": "fa02dc75-d8ea-5d91-8f16-0131d2ca8c9e",
+      "name": "Marcar error interno",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5400,
+        840
+      ],
+      "credentials": {
+        "postgres": {
+          "id": null,
+          "name": "PostgreSQL"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $('Fallo interno').item.json.chat_id }}",
+        "text": "={{ $('Fallo interno').item.json.text }}",
+        "replyMarkup": "none",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false,
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "a0a2c1d9-2a38-5f4c-987e-9b4119a3b7b4",
+      "name": "Avisar fallo",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        5620,
+        840
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": "Telegram"
+        }
+      },
+      "notes": "Si Telegram también falla, queda el rastro en la base.",
+      "onError": "continueRegularOutput"
     }
   ],
   "connections": {
@@ -798,14 +932,25 @@
         ],
         [
           {
-            "node": "¿Ya existe?",
+            "node": "Reservar",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "¿Ya existe?": {
+    "Reservar": {
+      "main": [
+        [
+          {
+            "node": "Con reserva",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Con reserva": {
       "main": [
         [
           {
@@ -1006,6 +1151,64 @@
         [
           {
             "node": "Pedir acción",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedir respuesta": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fallo interno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedir aprobación": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fallo interno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pedir acción": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fallo interno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallo interno": {
+      "main": [
+        [
+          {
+            "node": "Marcar error interno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar error interno": {
+      "main": [
+        [
+          {
+            "node": "Avisar fallo",
             "type": "main",
             "index": 0
           }

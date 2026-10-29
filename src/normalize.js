@@ -3,6 +3,8 @@
 // Convierte el correo del nodo IMAP (o del webhook de prueba) en texto limpio.
 // El HTML, la firma y la cadena de respuestas no deben llegar al modelo.
 
+const crypto = require('crypto');
+
 function decodeEntities(value) {
   return String(value || '')
     .replace(/&nbsp;/gi, ' ')
@@ -27,12 +29,19 @@ function htmlToText(html) {
   return decodeEntities(text);
 }
 
+// El nodo IMAP en formato "simple" deja las cabeceras en metadata como
+// "valor". En formato "resolved" llegan en headers como "Clave: valor".
+// Aquí se queda solo el valor, con la clave en minúsculas.
 function headerMap(raw) {
   const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};
   const headers = raw.headers && typeof raw.headers === 'object' ? raw.headers : {};
   const merged = {};
   for (const [key, value] of Object.entries({ ...metadata, ...headers })) {
-    merged[String(key).toLowerCase()] = Array.isArray(value) ? value.join(' ') : String(value ?? '');
+    const name = String(key).toLowerCase();
+    let text = Array.isArray(value) ? value.join(' ') : String(value ?? '');
+    const prefix = name + ':';
+    if (text.toLowerCase().startsWith(prefix)) text = text.slice(prefix.length);
+    merged[name] = text.replace(/\s+/g, ' ').trim();
   }
   return merged;
 }
@@ -44,7 +53,13 @@ function isoOrNull(value) {
 }
 
 function parseAddress(value) {
-  const text = String(value || '').trim();
+  // Formato "resolved" de mailparser: { value: [{ address, name }], text }.
+  if (value && typeof value === 'object') {
+    const first = Array.isArray(value.value) ? value.value[0] : null;
+    if (first && first.address) return { address: String(first.address).trim().toLowerCase(), name: String(first.name || '').trim() };
+    value = value.text || '';
+  }
+  const text = String(value || '').replace(/[\r\n]+/g, ' ').trim();
   const match = text.match(/<([^>]+)>/);
   const address = (match ? match[1] : text).trim().toLowerCase();
   const name = match ? text.slice(0, match.index).replace(/"/g, '').trim() : '';
@@ -98,15 +113,31 @@ function stripTrackers(text) {
   });
 }
 
+function sha256(text) {
+  return crypto.createHash('sha256').update(String(text)).digest('hex');
+}
+
+// Clave de idempotencia. Si el correo trae Message-ID, es ese. Si no lo trae,
+// se calcula con remitente, destinatario, fecha, asunto y cuerpo: el mismo
+// correo leído dos veces da la misma clave y no se procesa dos veces.
+// Un Message-ID absurdo de largo se resume para que el índice único no falle.
+function messageKey(rawId, mail) {
+  const id = String(rawId || '').replace(/\s+/g, '').replace(/^<|>$/g, '');
+  if (id && id.length <= 400) return { message_id: id, message_id_generated: false };
+  if (id) return { message_id: 'largo-' + sha256(id).slice(0, 40), message_id_generated: true };
+  const seed = [mail.from_address, mail.to_address, mail.received_at || '', mail.subject, mail.body].join('\n');
+  return { message_id: 'generado-' + sha256(seed).slice(0, 40), message_id_generated: true };
+}
+
 function normalizeEmail(raw) {
-  const source = raw && raw.body && (raw.body.text || raw.body.textPlain || raw.body.subject || raw.body.from)
+  const source = raw && raw.body && typeof raw.body === 'object' && (raw.body.text || raw.body.textPlain || raw.body.subject || raw.body.from)
     ? raw.body
     : (raw || {});
   const headers = headerMap(source);
-  const plain = String(source.textPlain || source.text || source.body || '').trim();
-  const html = String(source.textHtml || source.html || '').trim();
+  const plain = String(source.textPlain || source.text || (typeof source.body === 'string' ? source.body : '') || '').trim();
+  const html = String(source.textHtml || (typeof source.html === 'string' ? source.html : '') || '').trim();
   let body = plain || htmlToText(html);
-  body = body.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ');
+  body = body.replace(/\r\n/g, '\n').replace(/ /g, ' ');
   body = cutQuotedChain(body);
   body = cutSignature(body);
   body = stripTrackers(body);
@@ -115,19 +146,19 @@ function normalizeEmail(raw) {
 
   const from = parseAddress(source.from || headers.from || '');
   const to = parseAddress(source.to || headers.to || '');
-  const messageId = String(headers['message-id'] || source.message_id || '').trim().replace(/^<|>$/g, '');
-  return {
-    message_id: messageId,
+  const mail = {
     from_address: from.address,
-    from_name: from.name,
+    from_name: from.name.slice(0, 200),
     to_address: to.address,
-    subject: String(source.subject || headers.subject || '').replace(/\s+/g, ' ').trim(),
+    subject: String(source.subject || headers.subject || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     body,
-    in_reply_to: String(headers['in-reply-to'] || '').trim(),
-    references_header: String(headers.references || '').trim(),
+    in_reply_to: String(headers['in-reply-to'] || source.inReplyTo || '').trim().slice(0, 1000),
+    references_header: String(headers.references || (Array.isArray(source.references) ? source.references.join(' ') : source.references) || '').trim().slice(0, 4000),
     headers,
     received_at: isoOrNull(source.date || headers.date),
   };
+  const key = messageKey(headers['message-id'] || source.messageId || source.message_id, mail);
+  return { message_id: key.message_id, message_id_generated: key.message_id_generated, ...mail };
 }
 
-module.exports = { normalizeEmail, htmlToText };
+module.exports = { normalizeEmail, htmlToText, messageKey };

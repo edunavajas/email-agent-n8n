@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS mail_messages (
     github_issue_number  integer,
     github_issue_url     text,
     approval_due_at      timestamptz,
+    route                text,
+    reply_message_id     text,
     auto_replied_at      timestamptz,
     received_at          timestamptz,
     created_at           timestamptz NOT NULL DEFAULT now(),
@@ -38,7 +40,35 @@ CREATE TABLE IF NOT EXISTS mail_messages (
         CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
 );
 
+-- Si la tabla ya existía con el esquema anterior, se añaden las columnas nuevas.
+ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS route text;
+ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS reply_message_id text;
+
+-- Estados posibles. Cada flujo pasa de uno a otro con un UPDATE ... WHERE
+-- status = '<el de antes>': si dos ejecuciones llegan a la vez, solo una gana.
+--   01: procesando -> pendiente | ignorado_autorespuesta | error_interno
+--   02: pendiente/aprobado -> enviando -> respondido_auto | respondido_manual
+--       | retenido_bucle | error_envio
+--   03a: pendiente -> avisando -> esperando_aprobacion | error_aviso
+--   03b: esperando_aprobacion/esperando_edicion/error_envio -> aprobado
+--       | rechazado | esperando_edicion | aprobacion_vencida
+--   04: pendiente -> procesando_accion -> descartado | lead_registrado
+--       | urgente_avisado | issue_creada | error_accion
+--   05: esperando_aprobacion/esperando_edicion -> aprobacion_vencida
+ALTER TABLE mail_messages DROP CONSTRAINT IF EXISTS mail_messages_status_check;
+ALTER TABLE mail_messages ADD CONSTRAINT mail_messages_status_check CHECK (status IN (
+    'procesando', 'pendiente', 'ignorado_autorespuesta', 'error_interno',
+    'enviando', 'respondido_auto', 'respondido_manual', 'retenido_bucle', 'error_envio',
+    'avisando', 'esperando_aprobacion', 'esperando_edicion', 'aprobado', 'rechazado',
+    'aprobacion_vencida', 'error_aviso',
+    'procesando_accion', 'descartado', 'lead_registrado', 'urgente_avisado', 'issue_creada', 'error_accion'
+));
+ALTER TABLE mail_messages DROP CONSTRAINT IF EXISTS mail_messages_route_check;
+ALTER TABLE mail_messages ADD CONSTRAINT mail_messages_route_check
+    CHECK (route IS NULL OR route IN ('auto', 'approval', 'spam', 'lead', 'urgent', 'bug'));
+
 -- Lo que el sistema hizo de verdad: enviar, descartar, abrir issue, avisar.
+-- mail_id vacío = algo que no es de un correo (un botón de Telegram de otro chat).
 CREATE TABLE IF NOT EXISTS mail_actions (
     id          bigserial PRIMARY KEY,
     mail_id     uuid REFERENCES mail_messages(id) ON DELETE CASCADE,
@@ -59,8 +89,14 @@ CREATE INDEX IF NOT EXISTS mail_messages_approval_due_idx
 CREATE UNIQUE INDEX IF NOT EXISTS mail_messages_telegram_uidx
     ON mail_messages (telegram_chat_id, telegram_message_id)
     WHERE telegram_message_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS mail_messages_telegram_edit_uidx
+    ON mail_messages (telegram_chat_id, telegram_edit_id)
+    WHERE telegram_edit_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mail_actions_mail_idx
     ON mail_actions (mail_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS mail_actions_orphan_idx
+    ON mail_actions (created_at)
+    WHERE mail_id IS NULL;
 
 -- updated_at se mantiene solo. Los flujos no tienen que acordarse.
 CREATE OR REPLACE FUNCTION mail_touch_updated_at()

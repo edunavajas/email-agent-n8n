@@ -38,6 +38,8 @@ Frase de la arquitectura, para cámara: *"El botón de Telegram no espera dentro
 
 ## 2. Importar los seis JSON
 
+**ANTES:** crea las credenciales del punto 3 con sus nombres exactos. Los nodos las piden por nombre y n8n las enlaza solas al importar (probado por CLI en un n8n 2.10.2 limpio: los 57 nodos con credencial quedaron enlazados). Si importas antes, eliges cada credencial a mano.
+
 **HACES:** *Workflows → Import from File*, uno por uno, en este orden: 01, 02, 03a, 03b, 04, 05.
 
 **TARDA:** la importación por CLI de los seis tardó unos 15 segundos, copiar ficheros incluido. En la interfaz, cuenta unos 20–40 segundos por fichero si el navegador va justo. El 01 pesa más porque lleva el prompt.
@@ -54,25 +56,27 @@ Di en voz alta que son seis ficheros y cinco trabajos, y que el 3 está partido 
 
 ## 3. Credenciales, en este orden
 
-Hazlas antes de activar nada.
+Hazlas antes de importar. Los nombres en negrita son los que buscan los nodos.
 
 1. **PostgreSQL.** La misma del episodio 2. Host `knowledge-db`.
 2. **RAG API Key.** La misma cabecera `X-RAG-API-Key`.
-3. **Mail API Key.** Nueva. Cabecera `X-MAIL-API-Key`. Te la inventas y la repites en todos los webhooks internos y en los HTTP que los llaman.
-4. **IMAP y SMTP** del buzón `soporte@`. Hostinger: `imap.hostinger.com:993` y `smtp.hostinger.com:465`.
-5. **LLM API.** Header `Authorization`, valor `Bearer sk-...`. DeepSeek V4 Flash.
+3. **Mail API Key.** Nueva. Cabecera `X-MAIL-API-Key`. Te la inventas: es la misma credencial en los webhooks internos y en los HTTP que los llaman.
+4. **IMAP** del buzón del agente: un Gmail gratuito con contraseña de aplicación (`imap.gmail.com:993`, SSL). Alternativa de pago o de empresa: ver README, «Otro buzón».
+5. **LLM API.** Header `Authorization`, valor `Bearer sk-...`. DeepSeek Flash (`deepseek-flash`).
 6. **Telegram.** Token de BotFather. Un solo bot: Telegram no admite dos triggers del mismo bot.
 7. **GitHub Issues.** Fine-grained, solo Issues, repo vacío. No el de un producto.
+
+El **SMTP no es una credencial de n8n.** Lo envía un Code node de Python para poder poner `In-Reply-To` y `References` (el nodo Send Email no tiene esos campos). En Coolify, en el servicio de n8n, contenedor `task-runners`: monta `runners/n8n-task-runners.json` en `/etc/n8n-task-runners.json` y añade `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_SECURITY=ssl`, `SMTP_USER` (la dirección de Gmail) y `SMTP_PASSWORD` (la misma contraseña de aplicación). Reinicia el servicio entero.
 
 **TARDA:** si las tienes en un gestor, 8–12 minutos. BotFather y el token de GitHub son lo que más se alarga si no están creados. No lo he cronometrado con un alta nueva: no había buzón ni bot en esta máquina.
 
 **EN PANTALLA:** el formulario de la credencial. El valor, tapado.
 
-**SI FALLA:** un 401 del RAG es la cabecera mal puesta (`X-RAG-API-Key`, no `Authorization`). Un 401 de DeepSeek es el `Bearer`. El nodo SMTP no avisa de que no manda `In-Reply-To`: simplemente no tiene ese campo. No lo busques en las opciones.
+**SI FALLA:** un 401 del RAG es la cabecera mal puesta (`X-RAG-API-Key`, no `Authorization`). Un 401 de DeepSeek es el `Bearer`. Si el envío falla con "el nodo Enviar (Python) no se ejecutó", el contenedor `task-runners` no tiene el fichero montado o perdió la conexión: reinícialo.
 
-**CENSURA:** todas. Token, contraseña del buzón, clave del RAG, `github_pat`.
+**CENSURA:** todas. Token, contraseña del buzón (también en las variables del contenedor), clave del RAG, `github_pat`.
 
-Luego el nodo Configuración: dominio, `rag_url`, `n8n_url`, `telegram_chat_id`, `github_repo`, umbral 0,75. Enseña el umbral y di la frase: subir = más Telegram, bajar = más respuestas solas y más riesgo.
+Luego el nodo Configuración: `support_address`, `telegram_chat_id`, `github_repo`, umbral 0,75. `n8n_url` y `rag_url` ya vienen con `http://localhost:5678`: n8n se llama a sí mismo. Enseña el umbral y di la frase: subir = más Telegram, bajar = más respuestas solas y más riesgo.
 
 ---
 
@@ -110,13 +114,15 @@ Pregunta de control que hice: "integración con SAP". El mejor fragmento fue una
 
 **HACES:** manda el 02 y el 03. En el móvil tienen que verse remitente, asunto, categoría, confianza, borrador y fuentes. Tres botones: Aprobar, Rechazar, Editar.
 
-- Aprobar llama al flujo 02 y el cliente recibe el borrador.
+- Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo.
 - Rechazar no envía. La fila pasa a `rechazado`.
-- Editar pide un mensaje de respuesta. Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía.
+- Editar pide un mensaje de respuesta. Hay que **responder** a ese mensaje (Telegram abre la respuesta solo). Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía. Un texto suelto no se envía a nadie.
+- Pulsa Aprobar dos veces delante de cámara: el segundo toque contesta "Ya se respondió" y no sale otro correo. Lo mismo con Aprobar después de Rechazar.
+- Solo vale tu chat (`telegram_chat_id`). Un botón desde otro chat no hace nada y queda apuntado como `telegram_ajeno`.
 
 **NO HE PULSADO NINGÚN BOTÓN.** No hay token de Telegram en el n8n del episodio. Los flujos están importados y parados.
 
-**SI FALLA:** "botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
+**SI FALLA:** "botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
 
 **CENSURA:** el token del bot si abres BotFather o `getUpdates`.
 
@@ -128,7 +134,7 @@ A las 24 horas el flujo 05 marca `aprobacion_vencida`. No se envía. La comproba
 
 Lo he hecho. Puse una fila `esperando_aprobacion` con `telegram_message_id` 4242, reinicié el n8n del episodio 2 y la fila seguía. El botón, en un bot de verdad, preguntaría a esa fila. El primer reinicio lo rompí yo: copié el sqlite como root y n8n entró en bucle (`SQLITE_READONLY`). Los flujos del episodio 2 no se perdieron. Un reinicio limpio, después, respondió a `list:workflow` en unos 10 segundos.
 
-No reinicies el n8n de NihongoHUB. Este era el del proyecto "Ep2 Knowledge Hub".
+No reinicies un n8n de otro proyecto que viva en la misma máquina. Si reinicias solo el contenedor de n8n, reinicia también `task-runners`: en la prueba de la revisión (n8n 2.10.2), el runner de Python no se volvió a conectar solo y los envíos fallaban hasta reiniciarlo.
 
 ---
 
@@ -136,17 +142,17 @@ No reinicies el n8n de NihongoHUB. Este era el del proyecto "Ep2 Knowledge Hub".
 
 Hazlos en este orden, que es el de la historia:
 
-1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con remitente, cuerpo y un `mailto:` de vuelta. El acuse lleva el número.
+1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva el número y va en el hilo.
 2. **07** urgente. El Telegram del equipo sale antes del resumen. No esperes al día siguiente para enseñarlo.
 3. **08** spam. No hay respuesta. La fila está, estado `descartado`.
-4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. Enseña el borrador sustituido o la ruta a una persona.
+4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
 5. **10** vacaciones. No sale correo. Estado `ignorado_autorespuesta`.
 6. **11** el hilo de quince respuestas. Enseña el cuerpo ya limpio: solo la pregunta del horario. `node scripts/check.js` lo comprueba; el cuerpo limpio queda por debajo de 500 caracteres y no contiene "respuesta citada número 15".
-7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila.
+7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila. Con Gmail el reenvío puede no llegar (deduplica por Message-ID): entonces, `POST /webhook/mail-ingest` con el mismo `message_id`.
 
 **Issue de GitHub:** el nodo está en el flujo 04. No lo he disparado. No he creado una issue de prueba para no dejar basura antes de la toma. El repo de destino lo creas tú, vacío, delante de cámara o justo antes.
 
-**CENSURA:** el token de GitHub. Si la issue lleva un correo real, píxelalo. Los de `test-emails/` son `@example` y se pueden ver.
+**CENSURA:** el token de GitHub. Si la issue lleva algo de un correo real que el tapado no cogió (un nombre), píxelalo. Los de `test-emails/` son `@example` y se pueden ver.
 
 ---
 
@@ -185,7 +191,7 @@ Córtalos o prepáralos. No son el contenido.
 
 ## RAM
 
-Medido en el VPS del episodio 2 (23,4 GiB). Outline no está en este host: el contenedor no existe aquí, la wiki vive en `docs.nihongohub.online`. No he levantado Outline para no tocar eso.
+Medido en el VPS del episodio 2 (23,4 GiB). Outline no estaba en ese host. No lo levanté para no tocar eso.
 
 | | Antes | Después de importar y reiniciar |
 |---|---|---|
@@ -202,14 +208,14 @@ El agente no añade contenedor. Son flujos dentro del n8n que ya tenías. El sal
 
 Sin maquillar. Sirve para contarlo.
 
-1. **El nodo Enviar email no pone `In-Reply-To`.** Lo miré en el código de n8n 2.10.2, dentro de la imagen. Tiene Reply-To y ya está. El runner no deja abrir un socket (`crypto` y `moment` nada más). El hilo estricto no está resuelto. El asunto sale como `Re:`.
+1. **El nodo Enviar email no pone `In-Reply-To`.** Lo miré en el código de n8n 2.10.2, dentro de la imagen. Tiene Reply-To y ya está (tampoco en las 2.x posteriores). El runner de JavaScript solo deja `crypto` y `moment`. **Resuelto en la revisión:** el envío lo hace un Code node de Python con `smtplib`, en el contenedor `task-runners`, con `runners/n8n-task-runners.json` montado y las `SMTP_*` en sus variables. Probado contra un SMTP de pruebas: salen `In-Reply-To`, `References` y `Auto-Submitted` en las respuestas automáticas.
 2. **`$env` no funciona.** Coolify deja `N8N_BLOCK_ENV_ACCESS_IN_NODE=true`. El modelo se cambia en el nodo Configuración, no en una variable. El `.env` es la lista y el script de envío.
 3. **El RAG no devuelve la fecha.** Devuelve título, URL, score y texto. La fecha la leo de `knowledge_documents`.
 4. **Un score de 0,86 no significa que la página responda.** La pregunta de SAP cayó sobre páginas que no hablan de SAP. Por eso hay una segunda comprobación: las palabras de la pregunta tienen que estar en el fragmento.
 5. **La firma no se iba.** El corte buscaba `-- ` al principio de línea. El HTML dejaba ` --` con un espacio delante y "Enviado desde mi iPhone" sobrevivía. El correo 1 lo cazó. Ya corta esa línea.
 6. **Un umbral de "pregunta corta" a 80 caracteres** habría mandado a Telegram también el horario, que es una frase. Lo bajé a 40. El 02 ("¿me lo podéis mirar?") sigue yendo a una persona.
 7. **Importar por `docker cp` a `/tmp` del contenedor** falla: el proceso es el usuario `node` y `/tmp` queda de root. Hay que dejar los JSON en `/home/node`.
-8. **Copiar el sqlite de n8n como root tira la instancia.** `SQLITE_READONLY` y bucle de arranque. Se arregla devolviendo el fichero al uid 1000. No lo hagas en cámara. No toqué el n8n de NihongoHUB.
+8. **Copiar el sqlite de n8n como root tira la instancia.** `SQLITE_READONLY` y bucle de arranque. Se arregla devolviendo el fichero al uid 1000. No lo hagas en cámara. No toqué el n8n del otro proyecto.
 9. **No hay buzón, ni bot, ni clave de modelo, ni token de issues en este entorno.** La decisión, el esquema, el RAG vivo y el reinicio sí. El correo saliendo al remitente y el dedo en el botón, no.
 
 ---
@@ -253,3 +259,25 @@ El 05 (bug vago) y el 06 (lead) mételos si te sobra tiempo. Están en el repo p
 | El resumen diario con números | La SQL de contar, vencer y borrar está probada. El mensaje de Telegram, no |
 
 El episodio 2 sigue respondiendo al RAG después de los reinicios. Outline no se ha tocado.
+
+---
+
+## Revisión de la fase 3 (29-10-2026)
+
+Probado en un n8n 2.10.2 desechable (`n8nio/n8n:2.10.2` + `n8nio/runners:2.10.2`, como la plantilla de Coolify), con Postgres, un buzón IMAP de pruebas (GreenMail), un SMTP de pruebas (Mailpit) y un servidor falso para Telegram, el modelo, el RAG y GitHub. Nada real: ni buzón, ni bot, ni DeepSeek, ni GitHub.
+
+| Punto | Resultado |
+|---|---|
+| Importar y publicar los seis flujos por CLI, credenciales enlazadas por nombre | Sí |
+| 01 por IMAP (formato simple): HTML limpio, respuesta sola en el hilo | Sí. `In-Reply-To`, `References` y `Auto-Submitted: auto-replied` en el correo recibido |
+| 10 por IMAP: las cabeceras de autorespuesta llegan y se ignora | Sí |
+| Reenvío del 01, y cuatro copias a la vez del mismo Message-ID | Una fila, un correo, el modelo una vez, tres `duplicado` |
+| Correo sin Message-ID, dos veces | Una fila `generado-...`, un correo, sin `In-Reply-To` inventado |
+| Aprobar, doble toque, tres toques a la vez, aprobar tras rechazar, tras vencer | Un solo correo. Los toques de más contestan con un aviso |
+| Botón y texto desde otro chat | No hacen nada, quedan como `telegram_ajeno` |
+| 09: sin Aprobar; Aprobar forzado; Editar respondiendo al mensaje | Aprobar se rechaza. Solo sale el texto escrito por la persona |
+| 04 issue sin remitente ni mailto; 07 urgente; 08 spam; 06 lead | Sí |
+| SMTP caído, GitHub caído, 02 y 03a sin publicar | `error_envio` / `error_accion` / `error_interno` y aviso a Telegram. Reintentar envía cuando vuelve |
+| 05: vence, purga (también botones ajenos viejos) y manda el resumen | Sí |
+
+Queda para la prueba con lo real: el buzón de Gmail por IMAP y SMTP 465, el bot de verdad (botones con el dedo, `force_reply` en el móvil), DeepSeek devolviendo JSON y una issue en GitHub. Y cómo pinta el hilo en Gmail, Outlook y Apple Mail.

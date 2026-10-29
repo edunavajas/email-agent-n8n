@@ -2,6 +2,8 @@
 
 // La decisión final no se fía del modelo. Si el JSON no parsea, si huele a
 // inyección o si el tema tiene consecuencias, no se responde solo.
+// Un correo bloqueado (inyección o promesa de dinero) se queda SIN borrador:
+// en Telegram no hay botón Aprobar y solo sale lo que escriba una persona.
 
 const CATEGORIES = ['consulta_frecuente', 'bug', 'incidencia_urgente', 'lead', 'spam', 'revision'];
 
@@ -49,6 +51,37 @@ function llmPayload(response) {
   return typeof content === 'string' ? content : JSON.stringify(response);
 }
 
+// Trozos del prompt o de las marcas de datos en el borrador: el modelo está
+// repitiendo instrucciones o el correo intentó sacarlas. No se envía.
+const LEAK_PATTERNS = [
+  /correo_no_confiable/i,
+  /fuentes_rag/i,
+  /eres el clasificador de soporte/i,
+  /esquema exacto/i,
+];
+
+const MAX_DRAFT = 4000;
+
+// Valida la forma del JSON del modelo. Devuelve null si no es un objeto con
+// una categoría en texto y una confianza numérica: eso cuenta como JSON roto.
+function validateModelOutput(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (typeof parsed.categoria !== 'string') return null;
+  const confidence = Number(parsed.confianza);
+  if (parsed.confianza === null || parsed.confianza === '' || !Number.isFinite(confidence)) return null;
+  const text = (value) => (typeof value === 'string' ? value.trim() : '');
+  return {
+    categoria: CATEGORIES.includes(parsed.categoria.trim()) ? parsed.categoria.trim() : 'revision',
+    confianza: clamp(confidence),
+    borrador: text(parsed.borrador_respuesta).slice(0, MAX_DRAFT),
+    razonamiento: text(parsed.razonamiento).slice(0, 1000),
+  };
+}
+
+function leaksPrompt(draft) {
+  return LEAK_PATTERNS.some((pattern) => pattern.test(String(draft || '')));
+}
+
 function isSensitive(text, topics) {
   const haystack = String(text || '').toLowerCase();
   return topics.some((topic) => topic && haystack.includes(String(topic).toLowerCase()));
@@ -81,7 +114,7 @@ function decide(input, config) {
     .map((item) => item.trim())
     .filter(Boolean);
   const sources = Array.isArray(input.sources) ? input.sources : [];
-  const parsed = input.parsed && typeof input.parsed === 'object' ? input.parsed : null;
+  const parsed = validateModelOutput(input.parsed);
   const topScore = Number(sources[0] && sources[0].score) || 0;
 
   if (!parsed) {
@@ -98,20 +131,28 @@ function decide(input, config) {
     };
   }
 
-  let category = CATEGORIES.includes(parsed.categoria) ? parsed.categoria : 'revision';
-  let confidence = clamp(parsed.confianza);
-  let draft = String(parsed.borrador_respuesta || '').trim();
-  const reasoning = String(parsed.razonamiento || '').trim();
+  const category = parsed.categoria;
+  let confidence = parsed.confianza;
+  const draft = parsed.borrador;
+  const reasoning = parsed.razonamiento;
   const sensitive = isSensitive(`${input.subject}\n${input.body}\n${draft}`, topics);
   const grants = outputGrantsMoney(draft, sources);
+  const leak = leaksPrompt(draft);
   const injection = Boolean(input.injection);
 
-  if (injection || grants) {
+  if (injection || grants || leak) {
+    const why = injection
+      ? 'El correo intenta dar instrucciones al sistema.'
+      : grants
+        ? 'El borrador prometía una devolución que no está en la base de conocimiento.'
+        : 'El borrador repetía instrucciones internas.';
+    // El borrador del modelo se tira: pudo escribirlo el atacante. Lo que vea
+    // el remitente lo escribirá una persona con el botón Editar.
     return {
       category: 'revision',
       confidence: Math.min(confidence, 0.2),
-      draft_reply: 'Este correo pide saltarse las instrucciones o promete una devolución que no está en la base de conocimiento. No se envía nada automático.',
-      reasoning: reasoning || 'Comprobación de salida: el correo no puede dar órdenes.',
+      draft_reply: '',
+      reasoning: (why + ' No hay borrador: responde con Editar o rechaza. ' + reasoning).trim().slice(0, 1000),
       route: 'approval',
       status: 'esperando_aprobacion',
       sensitive,
@@ -136,7 +177,7 @@ function decide(input, config) {
   const vague = String(input.body || '').trim().length < 40;
   if (vague) confidence = Math.min(confidence, 0.55);
 
-  if (sensitive || category !== 'consulta_frecuente' || confidence < threshold || topScore < minScore || sources.length === 0 || !coversQuestion(input.body, sources)) {
+  if (!draft || sensitive || category !== 'consulta_frecuente' || confidence < threshold || topScore < minScore || sources.length === 0 || !coversQuestion(input.body, sources)) {
     return {
       category: category === 'consulta_frecuente' ? category : 'revision',
       confidence,
@@ -163,4 +204,4 @@ function decide(input, config) {
   };
 }
 
-module.exports = { decide, extractJson, llmPayload, isSensitive };
+module.exports = { decide, extractJson, llmPayload, isSensitive, validateModelOutput };
