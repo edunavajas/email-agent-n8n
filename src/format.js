@@ -53,6 +53,19 @@ function failureMessage(what, row, error) {
   return lines.filter((line) => line !== '').join('\n').slice(0, 3900);
 }
 
+// Aviso de lead: llega al móvil al momento. Sin botones: no se contesta solo.
+function leadMessage(row) {
+  const draft = String(row.draft_reply || '').trim().slice(0, 900);
+  const lines = [
+    '<b>Lead nuevo</b>',
+    `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,
+    `Asunto: ${escapeHtml(String(row.subject || '').slice(0, 200))}`,
+  ];
+  if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);
+  lines.push('', '<b>Respuesta sugerida (no enviada)</b>', escapeHtml(draft || '(sin borrador)'), '', 'No se ha contestado: escríbele tú.');
+  return lines.join('\n').slice(0, 3900);
+}
+
 function summaryMessage(counts) {
   const n = (key) => Number(counts[key] || 0);
   const lines = [
@@ -81,4 +94,4 @@ function replySubject(subject) {
   return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
-module.exports = { approvalMessage, summaryMessage, failureMessage, replySubject, formatSources, escapeHtml };
+module.exports = { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject, formatSources, escapeHtml };

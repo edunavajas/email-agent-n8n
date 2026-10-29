@@ -82,7 +82,7 @@ Luego el nodo Configuración: `support_address`, `telegram_chat_id`, `github_rep
 
 ## 4. La FAQ dentro del RAG
 
-**HACES:** indexa `kb/faq-soporte.md` como un documento `repo`, sin `replace_all` sobre el resto del índice.
+**HACES:** indexa `kb/faq-soporte.md` como un documento `repo` con `POST /webhook/rag-index-repo`. Ese flujo exige `replace_all: true` y borra del índice los documentos `repo` que no vengan en el lote (los de Outline no se tocan). Si la FAQ es tu único documento de repo, no pasa nada. Si tienes más, mándalos todos en el mismo lote. Es asíncrono: responde `Workflow was started` y tarda unos 20 s.
 
 **TARDA:** el embedding de esa página, contra el TEI del episodio 2, tardó unos 9 segundos. La búsqueda siguiente, unos 4 segundos, y el primer resultado fue esa FAQ con score 0,90.
 
@@ -142,7 +142,7 @@ No reinicies un n8n de otro proyecto que viva en la misma máquina. Si reinicias
 
 Hazlos en este orden, que es el de la historia:
 
-1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva el número y va en el hilo.
+1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva la referencia (#N), sin enlace a GitHub, y va en el hilo.
 2. **07** urgente. El Telegram del equipo sale antes del resumen. No esperes al día siguiente para enseñarlo.
 3. **08** spam. No hay respuesta. La fila está, estado `descartado`.
 4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
@@ -233,7 +233,7 @@ Orden que sí sale seguido:
 5. **Toma 3, el reenvío del 01** y, si quieres el reinicio, hazlo con una fila ya en `esperando_aprobacion` y el botón en el móvil antes de reiniciar. Comprueba el botón después, no durante el "connection lost".
 6. **Toma 4, Resumen ahora.** Los números tienen que cuadrar con lo que acabas de hacer. Si mandaste los doce, el resumen tiene que decirlo.
 
-El 05 (bug vago) y el 06 (lead) mételos si te sobra tiempo. Están en el repo para que la tabla esté completa; en cámara el bug detallado y el lead se explican en una frase.
+El 05 (bug vago) y el 06 (lead) mételos si te sobra tiempo. Están en el repo para que la tabla esté completa; en cámara el bug detallado y el lead se explican en una frase: el lead llega al móvil con la respuesta sugerida, sin botones, y no se contesta solo.
 
 ---
 

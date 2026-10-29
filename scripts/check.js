@@ -6,7 +6,7 @@ const path = require('path');
 const { normalizeEmail } = require('../src/normalize');
 const { inspectMail, isValidAddress } = require('../src/security');
 const { decide, extractJson, validateModelOutput } = require('../src/decide');
-const { approvalMessage, summaryMessage, failureMessage } = require('../src/format');
+const { approvalMessage, leadMessage, summaryMessage, failureMessage } = require('../src/format');
 const { buildUserBlock } = require('../src/prompt');
 const { parseUpdate, callbackOutcome } = require('../src/telegram');
 const { issuePayload, redactPersonalData } = require('../src/issue');
@@ -300,6 +300,16 @@ const blockedMessage = approvalMessage({ from_address: 'atacante@externo.example
 assert.ok(blockedMessage.includes('sin borrador: bloqueado'));
 assert.ok(blockedMessage.includes('No hay botón Aprobar'));
 assert.ok(!failureMessage('x', { id: 'r1', subject: '<b>' }, 'e').includes('<b>&'));
+
+// --- Telegram: aviso de lead ---
+const lead = leadMessage({ from_address: 'marta@empresa.example', from_name: 'Marta <b>', subject: 'Presupuesto & demo', reasoning: 'Pide una demo.', draft_reply: 'Hola, ' + 'x'.repeat(2000) });
+assert.ok(lead.startsWith('<b>Lead nuevo</b>'));
+assert.ok(lead.includes('Respuesta sugerida (no enviada)'));
+assert.ok(lead.includes('Marta &lt;b&gt;') && lead.includes('Presupuesto &amp; demo'));
+assert.ok(!lead.includes('<b>Marta'));
+assert.ok(lead.endsWith('No se ha contestado: escríbele tú.'));
+assert.ok(lead.length < 1600, String(lead.length));
+assert.ok(leadMessage({ from_address: 'a@b.example' }).includes('(sin borrador)'));
 
 // --- Issue de GitHub: sin datos de contacto ---
 const issue = issuePayload({
