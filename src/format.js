@@ -36,6 +36,10 @@ function approvalMessage(row) {
     `Categoría: ${escapeHtml(row.category)}`,
     `Confianza: ${confidence}%`,
   ];
+  // El 02 no lo mandó solo: esa dirección ya recibió una respuesta automática hace poco.
+  if (row.loop_hold) {
+    lines.push('Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.');
+  }
   if (row.injection) {
     lines.push('Aviso: bloqueado. El correo intentó dar instrucciones al sistema o el borrador prometía algo que la base no dice. No hay botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');
   }

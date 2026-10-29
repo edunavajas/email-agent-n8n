@@ -78,7 +78,9 @@ function callbackOutcome(row, action) {
     respondido_manual: 'Ya se respondió. No se envía otra vez.',
     rechazado: 'Ya estaba rechazado. No se envía nada.',
     aprobacion_vencida: 'Venció el plazo de aprobación. No se envía nada.',
-    retenido_bucle: 'Retenido para no entrar en bucle. No se envía.',
+    // Una fila retenida tiene botones cuando el 03a la pasa a esperando_aprobacion.
+    // Si un botón la encuentra aún aquí, es que no llegó a aprobación.
+    retenido_bucle: 'Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',
   };
   return { next: 'none', notice: notices[status] || `No se puede hacer eso ahora (estado: ${status || 'desconocido'}).` };
 }

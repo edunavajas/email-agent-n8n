@@ -613,9 +613,9 @@ SELECT (SELECT count(*) FROM upd)::int AS updated""",
 def flow_reply():
     cfg = "$('Configuración').first().json"
     nodes = [
-        sticky("Notas respuesta", 80, 40, "### 02 Respuesta\n\nSolo envía si la fila está lista: `pendiente` con ruta auto, o `aprobado` desde Telegram. El UPDATE que la pasa a `enviando` es atómico: un doble toque no manda dos correos.\n\nEnvía un Code node de Python con smtplib, porque el nodo Send Email de n8n 2.10.2 no deja poner In-Reply-To ni References. El SMTP sale de las variables SMTP_* del contenedor de task runners.\n\nSi el envío falla: `error_envio` y aviso a Telegram con Reintentar."),
+        sticky("Notas respuesta", 80, 40, "### 02 Respuesta\n\nSolo envía si la fila está lista: `pendiente` con ruta auto, o `aprobado` desde Telegram. El UPDATE que la pasa a `enviando` es atómico: un doble toque no manda dos correos.\n\nEnvía un Code node de Python con smtplib, porque el nodo Send Email de n8n 2.10.2 no deja poner In-Reply-To ni References. El SMTP sale de las variables SMTP_* del contenedor de task runners.\n\nSi el envío falla: `error_envio` y aviso a Telegram con Reintentar.\n\nFreno anti-bucles: si esa dirección ya recibió una respuesta automática en la última hora, no sale sola. Pasa por `retenido_bucle` y va al 03a, con el motivo. Si se aprueba, vuelve aquí en modo manual, que no tiene freno."),
         webhook("Webhook respuesta", "mail-reply", 220, 300, "POST /webhook/mail-reply. Cabecera X-MAIL-API-Key."),
-        config_node(460, 300, ["support_address", "approval_hours", "telegram_chat_id"]),
+        config_node(460, 300, ["support_address", "approval_hours", "telegram_chat_id", "n8n_url"]),
         code("Leer petición", 700, 300, uuid_guard("mode: ['auto', 'manual'].includes(body.mode) ? body.mode : ''") .replace("valid }", "valid: valid && ['auto', 'manual'].includes(body.mode) }")),
         bool_if("¿Válida?", 920, 300, "={{ $json.valid }}"),
         postgres(
@@ -670,11 +670,11 @@ return { json: {
   recent: Number($json.recent || 0),
 } };
 """, ("format.js",)),
-        bool_if("¿Bloquear?", 1800, 300, "={{ $json.mode === 'auto' && $json.recent > 0 }}", "Ya hubo respuesta automática a esta dirección en la última hora."),
+        bool_if("¿Bloquear?", 1800, 300, "={{ $json.mode === 'auto' && $json.recent > 0 }}", "Ya hubo respuesta automática a esta dirección en la última hora. Sí: no sale sola, va a aprobación."),
         postgres(
             "Retener",
             2020,
-            140,
+            120,
             """WITH upd AS (
   UPDATE mail_messages SET status = 'retenido_bucle'
   WHERE id = $1::uuid AND status = 'enviando'
@@ -686,6 +686,42 @@ return { json: {
 )
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$json.id] }}",
+            "enviando -> retenido_bucle. Queda en mail_actions como rastro. Sigue en Pedir aprobación.",
+        ),
+        http_json(
+            "Pedir aprobación",
+            2240,
+            120,
+            f"={{{{ {cfg}.n8n_url.replace(/\\/$/, '') + '/webhook/mail-approval' }}}}",
+            "={{ JSON.stringify({ mail_id: $('Preparar envío').item.json.id, reason: 'bucle' }) }}",
+            "mail",
+            "Dispara el 03a: Telegram con Aprobar, Editar y Rechazar y el motivo del freno. Aprobar vuelve aquí en modo manual.",
+        ),
+        code("Fallo aprobación", 2460, 40, """
+const mail = $('Preparar envío').item.json;
+const config = $('Configuración').first().json;
+const raw = $json.error;
+const error = String(typeof raw === 'string' ? raw : (raw && (raw.message || raw.description)) || JSON.stringify(raw || 'sin detalle')).slice(0, 400);
+const hint = 'No se envía y sigue en retenido_bucle. ¿Está activo el flujo 03a (mail-approval)? ¿n8n_url y la credencial Mail API Key cuadran? Cuando esté, pide la aprobación otra vez: POST /webhook/mail-approval con {"mail_id": "<la fila>", "reason": "bucle"}.';
+return { json: { id: mail.id, fallo: error, chat_id: config.telegram_chat_id, text: failureMessage('no se pudo pedir aprobación de un correo retenido por el freno anti-bucles', { ...mail, hint }, error) } };
+""", ("format.js",), notes="El 03a no recibió la petición. La fila no se pierde: el resumen la cuenta como atascada."),
+        postgres(
+            "Anotar fallo aprobación",
+            2680,
+            40,
+            """INSERT INTO mail_actions (mail_id, action, detail)
+VALUES ($1::uuid, 'error_llamada_03a', jsonb_build_object('error', $2::text))
+RETURNING id""",
+            "={{ [$json.id, $json.fallo] }}",
+        ),
+        telegram(
+            "Avisar retenido",
+            2900,
+            40,
+            "={{ $('Fallo aprobación').item.json.chat_id }}",
+            "={{ $('Fallo aprobación').item.json.text }}",
+            "Sin botones: la fila aún no está en aprobación. Si Telegram también falla, queda el rastro en la base.",
+            on_error="continueRegularOutput",
         ),
         py_code("Enviar", 2020, 380, """
 import os
@@ -785,6 +821,10 @@ RETURNING id::text""",
     link(c, "Preparar envío", "¿Bloquear?")
     link(c, "¿Bloquear?", "Retener", 0)
     link(c, "¿Bloquear?", "Enviar", 1)
+    link(c, "Retener", "Pedir aprobación")
+    link(c, "Pedir aprobación", "Fallo aprobación", 1)
+    link(c, "Fallo aprobación", "Anotar fallo aprobación")
+    link(c, "Anotar fallo aprobación", "Avisar retenido")
     link(c, "Enviar", "¿Enviado?", 0)
     link(c, "Enviar", "Error de envío", 1)
     link(c, "¿Enviado?", "Marcar enviado", 0)
@@ -797,26 +837,34 @@ RETURNING id::text""",
 
 def flow_ask():
     nodes = [
-        sticky("Notas aprobación", 80, 40, "### 03a Pedir aprobación\n\nManda el borrador a Telegram y guarda el message_id. Aquí termina.\n\nUn correo bloqueado (inyección o promesa de dinero) llega sin borrador y sin botón Aprobar: solo Rechazar o Editar.\n\nSi nadie pulsa, el flujo 05 marca la fila como vencida cuando pasa approval_hours. No se envía sola."),
-        webhook("Webhook aprobación", "mail-approval", 220, 300, "POST /webhook/mail-approval."),
+        sticky("Notas aprobación", 80, 40, "### 03a Pedir aprobación\n\nManda el borrador a Telegram y guarda el message_id. Aquí termina.\n\nUn correo bloqueado (inyección o promesa de dinero) llega sin borrador y sin botón Aprobar: solo Rechazar o Editar.\n\nSi nadie pulsa, el flujo 05 marca la fila como vencida cuando pasa approval_hours. No se envía sola.\n\nTambién llegan aquí los correos que el freno anti-bucles del 02 no dejó salir solos (`retenido_bucle`, con `reason: bucle`). El mensaje dice por qué."),
+        webhook("Webhook aprobación", "mail-approval", 220, 300, "POST /webhook/mail-approval. Desde el 01 con mail_id; desde el 02 con mail_id y reason: bucle."),
         config_node(460, 300, ["approval_hours", "telegram_chat_id"]),
-        code("Leer id", 700, 300, uuid_guard("flow: '03a'")),
+        code("Leer id", 700, 300, uuid_guard("flow: '03a', reason: body.reason === 'bucle' ? 'bucle' : ''")),
         bool_if("¿Válida?", 920, 300, "={{ $json.valid }}"),
         postgres(
             "Reclamar",
             1140,
             300,
-            """WITH claimed AS (
-  UPDATE mail_messages SET status = 'avisando'
-  WHERE id = $1::uuid AND status = 'pendiente' AND route = 'approval'
-  RETURNING id, from_address, from_name, subject, category, confidence, draft_reply, reasoning,
-            rag_sources, injection_flag, sensitive_flag
+            """WITH target AS (
+  SELECT id, status AS previous_status
+  FROM mail_messages
+  WHERE id = $1::uuid
+    AND ((status = 'pendiente' AND route = 'approval')
+      OR (status = 'retenido_bucle' AND $2::text = 'bucle'))
+), claimed AS (
+  UPDATE mail_messages m SET status = 'avisando'
+  FROM target t
+  WHERE m.id = t.id AND m.status = t.previous_status
+  RETURNING m.id, m.from_address, m.from_name, m.subject, m.category, m.confidence, m.draft_reply,
+            m.reasoning, m.rag_sources, m.injection_flag, m.sensitive_flag, t.previous_status
 )
 SELECT c.id::text AS id, c.from_address, c.from_name, c.subject, c.category, c.confidence,
-       c.draft_reply, c.reasoning, c.rag_sources, c.injection_flag, c.sensitive_flag
+       c.draft_reply, c.reasoning, c.rag_sources, c.injection_flag, c.sensitive_flag,
+       COALESCE(c.previous_status = 'retenido_bucle', false) AS loop_hold
 FROM (SELECT 1) AS one LEFT JOIN claimed c ON true""",
-            "={{ [$json.mail_id] }}",
-            "pendiente -> avisando. Si llega dos veces, la segunda no manda otro Telegram.",
+            "={{ [$json.mail_id, $json.reason] }}",
+            "pendiente (ruta approval) o retenido_bucle -> avisando. Si llega dos veces, la segunda no manda otro Telegram.",
         ),
         bool_if("¿Reclamada?", 1360, 300, "={{ !!$json.id }}"),
         postgres(
@@ -824,7 +872,7 @@ FROM (SELECT 1) AS one LEFT JOIN claimed c ON true""",
             1580,
             120,
             IGNORED_REQUEST,
-            "={{ [$('Leer id').item.json.mail_id, '03a'] }}",
+            "={{ [$('Leer id').item.json.mail_id, $('Leer id').item.json.reason ? '03a ' + $('Leer id').item.json.reason : '03a'] }}",
         ),
         code("Texto Telegram", 1580, 300, """
 const sources = typeof $json.rag_sources === 'string' ? JSON.parse($json.rag_sources) : ($json.rag_sources || []);
@@ -839,9 +887,10 @@ const text = approvalMessage({
   sources,
   injection: $json.injection_flag,
   sensitive: $json.sensitive_flag,
+  loop_hold: $json.loop_hold === true,
 });
 return { json: { ...$json, blocked: $json.injection_flag === true, telegram_text: text, chat_id: String($('Configuración').first().json.telegram_chat_id) } };
-""", ("format.js",), notes="Remitente, asunto, categoría, confianza, motivo, borrador y fuentes. Cabe en el móvil."),
+""", ("format.js",), notes="Remitente, asunto, categoría, confianza, motivo, borrador y fuentes. Si viene del freno anti-bucles, lo dice. Cabe en el móvil."),
         bool_if("¿Bloqueado?", 1800, 300, "={{ $json.blocked }}"),
         telegram(
             "Avisar",
@@ -1489,15 +1538,16 @@ SELECT (SELECT count(*) FROM purged)::int AS purged, (SELECT count(*) FROM orpha
   count(*) FILTER (WHERE status = 'descartado' AND updated_at > now() - interval '1 day')::int AS spam,
   count(*) FILTER (WHERE status = 'urgente_avisado' AND updated_at > now() - interval '1 day')::int AS urgent,
   count(*) FILTER (WHERE status = 'ignorado_autorespuesta' AND created_at > now() - interval '1 day')::int AS ignored,
-  count(*) FILTER (WHERE status = 'retenido_bucle' AND updated_at > now() - interval '1 day')::int AS held,
+  (SELECT count(*) FROM mail_actions
+    WHERE action = 'retenido_bucle' AND created_at > now() - interval '1 day')::int AS held,
   count(*) FILTER (WHERE status IN ('esperando_aprobacion', 'esperando_edicion'))::int AS waiting,
   count(*) FILTER (WHERE status = 'aprobacion_vencida' AND updated_at > now() - interval '1 day')::int AS expired,
   count(*) FILTER (WHERE status IN ('error_interno', 'error_envio', 'error_aviso', 'error_accion'))::int AS errors,
-  count(*) FILTER (WHERE status IN ('procesando', 'enviando', 'avisando', 'aprobado', 'procesando_accion')
+  count(*) FILTER (WHERE status IN ('procesando', 'enviando', 'avisando', 'aprobado', 'procesando_accion', 'retenido_bucle')
                    AND updated_at < now() - interval '1 hour')::int AS stuck
 FROM mail_messages""",
             "",
-            "Errores = filas que siguen en un estado de error. Atascados = a medio camino más de una hora.",
+            "Retenidos = veces que saltó el freno en 24 h (rastro en mail_actions); esas filas van a aprobación. Errores = filas que siguen en un estado de error. Atascados = a medio camino más de una hora (un retenido_bucle que no llegó al 03a, también).",
         ),
         code("Redactar", 1420, 360, """
 const text = summaryMessage({

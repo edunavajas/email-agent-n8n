@@ -15,6 +15,7 @@ Correo IMAP
 01 Ingesta ── limpia, deduplica, filtra, pregunta al RAG, clasifica
     │
     ├── consulta clara y fuentes reales ──► 02 Respuesta (SMTP, en el hilo) ── respondido_auto
+    │                                         └── freno anti-bucles ──► 03a (no sale sola)
     ├── duda, inyección, precio, JSON roto ──► 03a Telegram (Aprobar / Rechazar / Editar)
     │                                              │
     │                                              ▼  el botón llega después, en otra ejecución
@@ -27,8 +28,8 @@ Correo IMAP
 | Fichero | Qué hace | Disparo |
 |---|---|---|
 | `workflows/01-ingesta.json` | Limpia el correo, no lo procesa dos veces, consulta `/webhook/rag-search` y decide la ruta. | IMAP. También `POST /webhook/mail-ingest` para pruebas. |
-| `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. | `POST /webhook/mail-reply` |
-| `workflows/03a-aprobacion.json` | Manda el borrador a Telegram y guarda el `message_id`. Se acaba. | `POST /webhook/mail-approval` |
+| `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. Si salta el freno anti-bucles, pasa el correo al 03a. | `POST /webhook/mail-reply` |
+| `workflows/03a-aprobacion.json` | Manda el borrador a Telegram y guarda el `message_id`. Se acaba. | `POST /webhook/mail-approval`, desde el 01 o el 02 |
 | `workflows/03b-botones.json` | Recibe el botón (solo del chat del dueño), busca la fila y envía, descarta o pide el texto corregido. | Telegram |
 | `workflows/04-acciones.json` | Issue de GitHub, aviso urgente, lead (se guarda y avisa por Telegram) o descarte. | `POST /webhook/mail-action` |
 | `workflows/05-resumen.json` | Vence aprobaciones, borra lo viejo y manda el resumen. | Cada día a las 06:00 UTC, o el botón "Resumen ahora". |
@@ -92,7 +93,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
    | `support_address` | 01, 02, 04 | La dirección del buzón del agente, la misma de `SMTP_USER`. Es el From y el Reply-To. Con Gmail, si no coincide, Gmail reescribe el From. |
    | `telegram_chat_id` | todos | Tu chat con el bot (número). Solo ese chat puede pulsar botones. |
    | `telegram_user_ids` | 03b | Vacío si el chat es privado. Si es un grupo, los id de quienes pueden decidir, separados por comas. |
-   | `n8n_url` | 01, 03b | `http://localhost:5678`: n8n se llama a sí mismo, sin salir a internet. |
+   | `n8n_url` | 01, 02, 03b | `http://localhost:5678`: n8n se llama a sí mismo, sin salir a internet. |
    | `rag_url` | 01 | `http://localhost:5678/webhook/rag-search` si el RAG del episodio 2 vive en el mismo n8n. |
    | `llm_base_url`, `llm_model` | 01 | Ver [Modelo](#modelo). |
    | `github_repo`, `github_api_url` | 04 | `tu-usuario/email-agent-sandbox` y `https://api.github.com`. |
@@ -267,6 +268,7 @@ Ningún error se queda callado. Cada uno deja la fila en un estado y, si se pued
 | GitHub no crea la issue | `error_accion` | Telegram |
 | Telegram no acepta el aviso de un lead | el lead sigue en `lead_registrado` | `error_aviso` en `mail_actions`; el lead sale en el resumen |
 | El 03b no consigue llamar al 02 | vuelve a `esperando_aprobacion` | Telegram: pulsa Aprobar otra vez cuando esté |
+| El 02 no consigue llamar al 03a con un correo retenido por el freno anti-bucles | sigue en `retenido_bucle` | Telegram desde el 02, sin botones. El resumen la cuenta como atascada |
 
 El resumen cuenta las filas en error y las que llevan más de una hora a medio camino.
 
@@ -308,7 +310,27 @@ Si el correo no trae Message-ID, el 01 calcula uno estable con remitente, destin
 
 No se contesta si la cabecera `Auto-Submitted` no es `no`, si viene `X-Autoreply`, `X-Autorespond`, `List-Id`, si la precedencia es bulk/list/junk, si el remitente es del estilo `no-reply@`, `mailer-daemon` o `postmaster`, o si el From no es una sola dirección normal (dos direcciones o caracteres raros: la respuesta podría acabar en un tercero). El correo 10 es la autorespuesta de vacaciones: se guarda como `ignorado_autorespuesta` y no sale nada. El nodo IMAP va en formato *simple*: así entrega todas las cabeceras en `metadata`, que es lo que lee el filtro. Las respuestas automáticas salen con `Auto-Submitted: auto-replied` (RFC 3834), para que otra autorespuesta no conteste.
 
-El flujo 02 tampoco manda una respuesta automática a una dirección que ya recibió una en la última hora. Esa fila queda en `retenido_bucle`.
+### Freno anti-bucles
+
+El flujo 02 no manda sola una respuesta a una dirección que ya recibió una respuesta automática en la última hora. El bucle se corta, pero el cliente no se queda sin respuesta. Si pregunta dos cosas en una hora, la segunda pasa por ti:
+
+1. La fila pasa a `retenido_bucle` y queda anotada en `mail_actions` (`retenido_bucle`).
+2. El 02 llama al 03a: `POST /webhook/mail-approval` con `{"mail_id": "...", "reason": "bucle"}`.
+3. A Telegram llega el borrador con Aprobar, Editar y Rechazar, y el aviso «Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.».
+4. Si apruebas, sale por el camino manual del 02, que no tiene freno. Si nadie pulsa, vence como cualquier aprobación.
+
+Un correo bloqueado (inyección o promesa de dinero) no pasa por aquí: el 02 no lo reclama en modo auto. Va al 03a desde el 01, sin Aprobar.
+
+Si el 02 no consigue llamar al 03a, la fila sigue en `retenido_bucle` y llega un aviso a Telegram, sin botones. El resumen la cuenta como atascada. Cuando el 03a esté publicado, repite la llamada con el id de la fila:
+
+```bash
+curl -sS -X POST https://n8n.tudominio.com/webhook/mail-approval \
+  -H 'X-MAIL-API-Key: <clave>' \
+  -H 'Content-Type: application/json' \
+  -d '{"mail_id": "<id de la fila>", "reason": "bucle"}'
+```
+
+Si es Telegram lo que falla dentro del 03a, la fila queda en `error_aviso`, como cualquier aviso de aprobación. En el resumen, "Retenidos por bucle" son las veces que saltó el freno en las últimas 24 horas, sacadas de `mail_actions`.
 
 ## Hilo del correo
 

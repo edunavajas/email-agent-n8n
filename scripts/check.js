@@ -309,6 +309,24 @@ for (const status of ['rechazado', 'respondido_manual', 'aprobacion_vencida', 'e
   assert.ok(callbackOutcome(row({ previous_status: status }), 'approve').notice.length <= 200, status);
 }
 
+// --- Freno anti-bucles: la fila retenida pasa a aprobación y los botones van igual ---
+// El 03a la deja en esperando_aprobacion: Aprobar, Rechazar y Editar actúan como en cualquier otra.
+assert.strictEqual(callbackOutcome(row({ claimed: 1 }), 'approve').next, 'send');
+assert.strictEqual(callbackOutcome(row({ claimed: 1 }), 'reject').next, 'reject');
+assert.strictEqual(callbackOutcome(row({ claimed: 1 }), 'edit').next, 'edit');
+assert.ok(/venci/i.test(callbackOutcome(row({ expired: true }), 'approve').notice), 'vence como las demás');
+// Si un botón la encuentra aún en retenido_bucle, no envía y lo explica.
+const stillHeld = callbackOutcome(row({ previous_status: 'retenido_bucle' }), 'approve');
+assert.strictEqual(stillHeld.next, 'none');
+assert.ok(/freno anti-bucles/.test(stillHeld.notice) && /aprobación/.test(stillHeld.notice), stillHeld.notice);
+
+const loopRow = { from_address: 'ana@cliente.example', subject: 'Otra duda', category: 'consulta_frecuente', confidence: 0.9, draft_reply: 'De 9 a 18.', sources: faq, reasoning: 'Está en la FAQ.' };
+const heldMessage = approvalMessage({ ...loopRow, loop_hold: true });
+assert.ok(heldMessage.includes('Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.'), heldMessage);
+assert.ok(heldMessage.includes('De 9 a 18.'), 'lleva el borrador para aprobarlo');
+assert.ok(!heldMessage.includes('No hay botón Aprobar'));
+assert.ok(!approvalMessage(loopRow).includes('freno anti-bucles'), 'una aprobación normal no lo dice');
+
 // --- Telegram: mensaje de aprobación de un correo bloqueado ---
 const blockedMessage = approvalMessage({ from_address: 'atacante@externo.example', subject: 'Pedido', category: 'revision', confidence: 0.1, draft_reply: '', injection: true, sources: [], reasoning: 'El correo intenta dar instrucciones al sistema.' });
 assert.ok(blockedMessage.includes('sin borrador: bloqueado'));
@@ -394,6 +412,64 @@ for (const [file, flow] of Object.entries(flows)) {
     }
     assert.ok(!/\$env|\$vars|process\.env/.test(JSON.stringify(item.parameters)), file + ': ' + item.name + ' no lee variables de entorno');
   }
+  // Ningún nodo huérfano: todo lo que no es disparador ni nota se alcanza desde un disparador.
+  const triggers = flow.nodes.filter((item) => /trigger|webhook|emailReadImap/i.test(item.type)).map((item) => item.name);
+  const reached = new Set(triggers);
+  const queue = [...triggers];
+  while (queue.length) {
+    const current = queue.shift();
+    for (const branch of (flow.connections[current] || { main: [] }).main) {
+      for (const edge of branch) if (!reached.has(edge.node)) { reached.add(edge.node); queue.push(edge.node); }
+    }
+  }
+  for (const item of flow.nodes) {
+    if (item.type !== 'n8n-nodes-base.stickyNote') assert.ok(reached.has(item.name), file + ': ' + item.name + ' está huérfano');
+  }
 }
+
+// --- Freno anti-bucles en los flujos ---
+const nodeOf = (file, name) => {
+  const found = flows[file].nodes.find((item) => item.name === name);
+  assert.ok(found, file + ': falta ' + name);
+  return found;
+};
+const targets = (file, name, output = 0) => ((flows[file].connections[name] || { main: [] }).main[output] || []).map((edge) => edge.node);
+const replyFlow = '02-respuesta.json';
+// La inyección no llega al freno: el reclamo auto ya la excluye.
+assert.ok(nodeOf(replyFlow, 'Reclamar').parameters.query.includes("route = 'auto' AND NOT injection_flag"));
+assert.deepStrictEqual(targets(replyFlow, '¿Bloquear?', 0), ['Retener']);
+assert.deepStrictEqual(targets(replyFlow, 'Retener'), ['Pedir aprobación']);
+const askNode = nodeOf(replyFlow, 'Pedir aprobación');
+assert.ok(askNode.parameters.url.includes("n8n_url") && askNode.parameters.url.includes("'/webhook/mail-approval'"), askNode.parameters.url);
+assert.ok(askNode.parameters.jsonBody.includes("reason: 'bucle'") && askNode.parameters.jsonBody.includes("$('Preparar envío').item.json.id"), askNode.parameters.jsonBody);
+assert.deepStrictEqual(targets(replyFlow, 'Pedir aprobación', 1), ['Fallo aprobación']);
+assert.deepStrictEqual(targets(replyFlow, 'Fallo aprobación'), ['Anotar fallo aprobación']);
+assert.deepStrictEqual(targets(replyFlow, 'Anotar fallo aprobación'), ['Avisar retenido']);
+assert.strictEqual(nodeOf(replyFlow, 'Avisar retenido').parameters.replyMarkup, 'none', 'sin botones: aún no está en aprobación');
+assert.ok(nodeOf(replyFlow, 'Configuración').parameters.assignments.assignments.some((item) => item.name === 'n8n_url'));
+const askClaim = nodeOf('03a-aprobacion.json', 'Reclamar').parameters;
+assert.ok(askClaim.query.includes("status = 'retenido_bucle' AND $2::text = 'bucle'") && askClaim.query.includes('AS loop_hold'), askClaim.query);
+assert.ok(askClaim.options.queryReplacement.includes('$json.reason'));
+const counter = nodeOf('05-resumen.json', 'Contar').parameters.query;
+assert.ok(/FROM mail_actions\s+WHERE action = 'retenido_bucle'/.test(counter), 'Retenidos por bucle sale del rastro');
+assert.ok(/'procesando_accion', 'retenido_bucle'\)/.test(counter), 'una retenida que no llegó al 03a cuenta como atascada');
+
+// Los nodos Code generados, ejecutados de verdad con un $json de prueba.
+function runNode(file, name, json, others = {}) {
+  const source = nodeOf(file, name).parameters.jsCode;
+  const $ = (node) => ({ item: { json: others[node] || {} }, first: () => ({ json: others[node] || {} }) });
+  return new Function('$json', '$', source)(json, $).json; // eslint-disable-line no-new-func
+}
+const askText = runNode('03a-aprobacion.json', 'Texto Telegram', { id: 'r1', ...loopRow, rag_sources: JSON.stringify(faq), injection_flag: false, sensitive_flag: false, loop_hold: true }, { 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(askText.telegram_text.includes('freno anti-bucles') && askText.blocked === false, 'el 03a lo manda con Aprobar y el motivo');
+const askPlain = runNode('03a-aprobacion.json', 'Texto Telegram', { id: 'r2', ...loopRow, rag_sources: [], injection_flag: false, sensitive_flag: false, loop_hold: false }, { 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(!askPlain.telegram_text.includes('freno anti-bucles'));
+assert.deepStrictEqual(runNode('03a-aprobacion.json', 'Leer id', { body: { mail_id: '0d7c1d1e-0000-4000-8000-000000000001', reason: 'bucle' } }).reason, 'bucle');
+assert.deepStrictEqual(runNode('03a-aprobacion.json', 'Leer id', { body: { mail_id: '0d7c1d1e-0000-4000-8000-000000000001', reason: 'otra' } }).reason, '');
+const prepared = runNode(replyFlow, 'Preparar envío', { id: 'r3', subject: '', from_address: 'ana@cliente.example', draft_reply: 'Hola', recent: 1 }, { 'Leer petición': { mode: 'auto' }, 'Configuración': { support_address: 'soporte@tudominio.com' } });
+assert.strictEqual(prepared.reply_subject, 'Re:');
+assert.strictEqual(prepared.recent, 1);
+const askFailed = runNode(replyFlow, 'Fallo aprobación', { error: { message: 'connect ECONNREFUSED' } }, { 'Preparar envío': { id: 'r3', from_address: 'ana@cliente.example', subject: '' }, 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(askFailed.text.includes('retenido_bucle') && askFailed.text.includes('ECONNREFUSED') && askFailed.id === 'r3', askFailed.text);
 
 console.log('check ok');
