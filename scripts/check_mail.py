@@ -70,6 +70,14 @@ message, _ = SENT[-1]
 assert result["sent"] and message["Bcc"] is None, message.as_string()
 assert "victima" not in message["References"]
 
+# Asunto vacío: "Re:" a secas, para que Gmail lo meta en el hilo. Un "Re:" que ya venía se conserva.
+for subject in ("", None, " \r\n "):
+    result = send_mail.send_reply({**MAIL, "subject": subject}, "soporte@tudominio.com", True, ENV)
+    message, _ = SENT[-1]
+    assert result["sent"] and message["Subject"] == "Re:", repr(message["Subject"])
+result = send_mail.send_reply(MAIL, "soporte@tudominio.com", True, ENV)
+assert SENT[-1][0]["Subject"] == "Re: Horario de soporte", SENT[-1][0]["Subject"]
+
 # Un To con dos direcciones no sale.
 before = len(SENT)
 result = send_mail.send_reply({**MAIL, "to": "ana@cliente.example, otra@tercero.example"}, "soporte@tudominio.com", True, ENV)

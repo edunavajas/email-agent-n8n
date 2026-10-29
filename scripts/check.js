@@ -6,7 +6,7 @@ const path = require('path');
 const { normalizeEmail } = require('../src/normalize');
 const { inspectMail, isValidAddress } = require('../src/security');
 const { decide, extractJson, validateModelOutput } = require('../src/decide');
-const { approvalMessage, leadMessage, summaryMessage, failureMessage } = require('../src/format');
+const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject } = require('../src/format');
 const { buildUserBlock } = require('../src/prompt');
 const { parseUpdate, callbackOutcome } = require('../src/telegram');
 const { issuePayload, redactPersonalData } = require('../src/issue');
@@ -197,6 +197,20 @@ assert.ok(message.includes('Ana'));
 assert.ok(message.includes('&lt;script&gt;'));
 assert.ok(message.includes('FAQ de soporte'));
 assert.ok(!message.includes('<script>'));
+
+// --- Asunto de la respuesta: vacío = "Re:" a secas (Gmail abre otro hilo con "Re: (sin asunto)") ---
+assert.strictEqual(replySubject(''), 'Re:');
+assert.strictEqual(replySubject(undefined), 'Re:');
+assert.strictEqual(replySubject(' \r\n '), 'Re:');
+assert.strictEqual(replySubject('Re:'), 'Re:');
+assert.strictEqual(replySubject('Horario'), 'Re: Horario');
+assert.strictEqual(replySubject('Re: Horario'), 'Re: Horario', 'un Re: que ya venía se conserva');
+assert.strictEqual(replySubject('RE: Horario'), 'RE: Horario');
+assert.strictEqual(replySubject('Re: Re: Re: horario'), 'Re: Re: Re: horario');
+assert.strictEqual(replySubject('hola\r\nBcc: x@y.example'), 'Re: hola Bcc: x@y.example', 'una sola línea');
+// En Telegram sí se lee "(sin asunto)": es texto para el dueño, no el asunto del correo.
+assert.ok(approvalMessage({ from_address: 'a@b.example', subject: '', category: 'revision', confidence: 0.5, draft_reply: 'x', sources: [] }).includes('Asunto: (sin asunto)'));
+assert.ok(leadMessage({ from_address: 'a@b.example', subject: '  ' }).includes('Asunto: (sin asunto)'));
 
 const summary = summaryMessage({ received: 12, auto_replied: 1, approved: 1, rejected: 1, leads: 1, issues: 1, spam: 1, urgent: 1, waiting: 2, expired: 0, purged: 0 });
 assert.ok(summary.includes('Recibidos: 12'));

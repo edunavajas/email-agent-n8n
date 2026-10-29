@@ -316,6 +316,8 @@ El nodo Send Email de n8n 2.10.2 pone asunto, cuerpo y Reply-To, y nada más: no
 
 Por eso el envío lo hace un **Code node de Python** con `smtplib`, de la biblioteca estándar. Está en `src/send_mail.py` y `scripts/build_workflows.py` lo copia dentro de los nodos "Enviar" (02) y los dos acuses (04). Pone `In-Reply-To` con el Message-ID del cliente, `References` con su cadena más ese id, un Message-ID propio (se guarda en `reply_message_id`) y quita los saltos de línea de todo lo que viene del correo, para que nadie cuele una cabecera.
 
+Si el correo del cliente llega sin asunto, la respuesta sale con asunto `Re:` a secas. Con `Re: (sin asunto)`, Gmail abre un hilo nuevo aunque `In-Reply-To` y `References` estén bien. Probado con Gmail real. En Telegram sí se ve «(sin asunto)»: ese texto es para ti, no va en el correo.
+
 Ese nodo corre en el contenedor de task runners (`n8nio/runners:2.10.2`, el de la plantilla de Coolify). De serie, ese contenedor no deja a Python importar nada ni leer variables. El fichero `runners/n8n-task-runners.json` es el de la imagen con tres cambios, solo para Python:
 
 - `N8N_RUNNERS_STDLIB_ALLOW=email,os,re,smtplib,ssl`: los módulos que usa el envío.

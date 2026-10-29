@@ -21,13 +21,18 @@ function formatSources(sources) {
   }).join('\n');
 }
 
+// En Telegram un asunto vacío se lee mejor así. El correo que sale no lo lleva.
+function shownSubject(subject) {
+  return String(subject || '').trim() || '(sin asunto)';
+}
+
 function approvalMessage(row) {
   const confidence = Math.round(Number(row.confidence || 0) * 100);
   const draft = String(row.draft_reply || '').slice(0, 900);
   const lines = [
     '<b>Correo para revisar</b>',
     `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,
-    `Asunto: ${escapeHtml(row.subject)}`,
+    `Asunto: ${escapeHtml(shownSubject(row.subject))}`,
     `Categoría: ${escapeHtml(row.category)}`,
     `Confianza: ${confidence}%`,
   ];
@@ -59,7 +64,7 @@ function leadMessage(row) {
   const lines = [
     '<b>Lead nuevo</b>',
     `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,
-    `Asunto: ${escapeHtml(String(row.subject || '').slice(0, 200))}`,
+    `Asunto: ${escapeHtml(shownSubject(row.subject).slice(0, 200))}`,
   ];
   if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);
   lines.push('', '<b>Respuesta sugerida (no enviada)</b>', escapeHtml(draft || '(sin borrador)'), '', 'No se ha contestado: escríbele tú.');
@@ -89,8 +94,12 @@ function summaryMessage(counts) {
   return lines.join('\n');
 }
 
+// Asunto del correo que sale. Si el del cliente venía vacío, "Re:" a secas:
+// con "Re: (sin asunto)" Gmail abre otro hilo aunque In-Reply-To y References
+// estén bien. Probado con Gmail real.
 function replySubject(subject) {
-  const clean = String(subject || '').replace(/[\r\n]+/g, ' ').trim() || '(sin asunto)';
+  const clean = String(subject || '').replace(/[\r\n]+/g, ' ').trim();
+  if (!clean) return 'Re:';
   return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
