@@ -1,7 +1,10 @@
 'use strict';
 
+// Textos que salen a Telegram y asuntos de respuesta. Todo lo que viene del
+// correo se escapa: el mensaje va con parse_mode HTML.
+
 function escapeHtml(value) {
-  return String(value || '')
+  return String(value ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
@@ -28,16 +31,32 @@ function approvalMessage(row) {
     `Categoría: ${escapeHtml(row.category)}`,
     `Confianza: ${confidence}%`,
   ];
-  if (row.injection) lines.push('Aviso: el correo intentó dar instrucciones al sistema. No se ha obedecido.');
+  if (row.injection) {
+    lines.push('Aviso: bloqueado. El correo intentó dar instrucciones al sistema o el borrador prometía algo que la base no dice. No hay botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');
+  }
   if (row.sensitive) lines.push('Aviso: habla de precio, plazo, devolución o datos personales. Hace falta una persona.');
-  lines.push('', '<b>Borrador</b>', escapeHtml(draft || '(vacío)'), '', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));
+  if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);
+  lines.push('', '<b>Borrador</b>', escapeHtml(draft || (row.injection ? '(sin borrador: bloqueado)' : '(vacío)')), '', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));
   return lines.join('\n').slice(0, 3900);
+}
+
+// Aviso cuando algo falla. Corto y sin el cuerpo del correo.
+function failureMessage(what, row, error) {
+  const lines = [
+    `<b>Fallo: ${escapeHtml(what)}</b>`,
+    row && row.from_address ? `De: ${escapeHtml(row.from_address)}` : '',
+    row && row.subject ? `Asunto: ${escapeHtml(String(row.subject).slice(0, 200))}` : '',
+    row && row.id ? `Fila: <code>${escapeHtml(row.id)}</code>` : '',
+    `Error: ${escapeHtml(String(error || 'sin detalle').slice(0, 500))}`,
+  ];
+  if (row && row.hint) lines.push('', escapeHtml(row.hint));
+  return lines.filter((line) => line !== '').join('\n').slice(0, 3900);
 }
 
 function summaryMessage(counts) {
   const n = (key) => Number(counts[key] || 0);
-  return [
-    '<b>Resumen del correo</b>',
+  const lines = [
+    '<b>Resumen del correo (últimas 24 h)</b>',
     `Recibidos: ${n('received')}`,
     `Respondidos solos: ${n('auto_replied')}`,
     `Aprobados a mano: ${n('approved')}`,
@@ -46,15 +65,20 @@ function summaryMessage(counts) {
     `Issues: ${n('issues')}`,
     `Spam registrado: ${n('spam')}`,
     `Urgentes: ${n('urgent')}`,
+    `Autorespuestas ignoradas: ${n('ignored')}`,
+    `Retenidos por bucle: ${n('held')}`,
     `Esperando aprobación: ${n('waiting')}`,
     `Aprobaciones vencidas: ${n('expired')}`,
+    `Con error (míralos): ${n('errors')}`,
+    `Atascados más de 1 h: ${n('stuck')}`,
     `Borrados por retención: ${n('purged')}`,
-  ].join('\n');
+  ];
+  return lines.join('\n');
 }
 
 function replySubject(subject) {
-  const clean = String(subject || '').trim() || '(sin asunto)';
+  const clean = String(subject || '').replace(/[\r\n]+/g, ' ').trim() || '(sin asunto)';
   return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
-module.exports = { approvalMessage, summaryMessage, replySubject, formatSources, escapeHtml };
+module.exports = { approvalMessage, summaryMessage, failureMessage, replySubject, formatSources, escapeHtml };
