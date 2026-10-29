@@ -62,7 +62,7 @@ Hazlas antes de importar. Los nombres en negrita son los que buscan los nodos.
 2. **RAG API Key.** La misma cabecera `X-RAG-API-Key`.
 3. **Mail API Key.** Nueva. Cabecera `X-MAIL-API-Key`. Te la inventas: es la misma credencial en los webhooks internos y en los HTTP que los llaman.
 4. **IMAP** del buzón del agente: un Gmail gratuito con contraseña de aplicación (`imap.gmail.com:993`, SSL). Alternativa de pago o de empresa: ver README, «Otro buzón».
-5. **LLM API.** Header `Authorization`, valor `Bearer sk-...`. DeepSeek V4 Flash.
+5. **LLM API.** Header `Authorization`, valor `Bearer sk-...`. DeepSeek Flash (`deepseek-flash`).
 6. **Telegram.** Token de BotFather. Un solo bot: Telegram no admite dos triggers del mismo bot.
 7. **GitHub Issues.** Fine-grained, solo Issues, repo vacío. No el de un producto.
 

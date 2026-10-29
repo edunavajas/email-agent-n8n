@@ -106,7 +106,7 @@
             {
               "id": "5e00c7e4-7d6e-564c-ad2f-43e4bd9da032",
               "name": "llm_model",
-              "value": "deepseek-v4-flash",
+              "value": "deepseek-flash",
               "type": "string"
             },
             {
@@ -494,7 +494,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $('Configuración').first().json.llm_model, temperature: 0, max_tokens: 1200, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Configuración').first().json.prompt }, { role: 'user', content: $json.user_block } ] }) }}",
+        "jsonBody": "={{ JSON.stringify(Object.assign({ model: $('Configuración').first().json.llm_model, temperature: 0, max_tokens: 1200, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: $('Configuración').first().json.prompt }, { role: 'user', content: $json.user_block } ] }, /deepseek\\.com/.test($('Configuración').first().json.llm_base_url) ? { thinking: { type: 'disabled' } } : {})) }}",
         "options": {
           "timeout": 120000,
           "response": {

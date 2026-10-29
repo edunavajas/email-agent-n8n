@@ -236,7 +236,7 @@ FIELDS = {
     "retention_days": (90, "number"),
     "sensitive_topics": ("precio,precios,plazo,plazos,contrato,legal,devolución,devolucion,reembolso,dni,iban,tarjeta", "string"),
     "llm_base_url": ("https://api.deepseek.com", "string"),
-    "llm_model": ("deepseek-v4-flash", "string"),
+    "llm_model": ("deepseek-flash", "string"),
     # n8n se llama a sí mismo: localhost:5678 es el propio contenedor de n8n.
     "rag_url": ("http://localhost:5678/webhook/rag-search", "string"),
     "n8n_url": ("http://localhost:5678", "string"),
@@ -465,7 +465,7 @@ return { json: { ...email, user_block: buildUserBlock(email, email.sources || []
             3400,
             400,
             f"={{{{ {cfg}.llm_base_url.replace(/\\/$/, '') + '/chat/completions' }}}}",
-            f"={{{{ JSON.stringify({{ model: {cfg}.llm_model, temperature: 0, max_tokens: 1200, response_format: {{ type: 'json_object' }}, messages: [ {{ role: 'system', content: {cfg}.prompt }}, {{ role: 'user', content: $json.user_block }} ] }}) }}}}",
+            f"={{{{ JSON.stringify(Object.assign({{ model: {cfg}.llm_model, temperature: 0, max_tokens: 1200, response_format: {{ type: 'json_object' }}, messages: [ {{ role: 'system', content: {cfg}.prompt }}, {{ role: 'user', content: $json.user_block }} ] }}, /deepseek\\.com/.test({cfg}.llm_base_url) ? {{ thinking: {{ type: 'disabled' }} }} : {{}})) }}}}",
             "llm",
             "JSON estricto. Si no parsea, el correo no se responde solo.",
         ),

@@ -193,9 +193,23 @@ Precios, plazos, contratos, devoluciones, reembolsos, DNI, IBAN y tarjeta van a 
 
 ## Modelo
 
-Recomiendo **DeepSeek V4 Flash** (`deepseek-v4-flash`, base `https://api.deepseek.com`). Es el Lite de la serie V4. En español sigue el JSON bien, tiene modo JSON y, a 17 de octubre de 2026, en la tarifa oficial sale a **0,14 $ el millón de tokens de entrada** (sin caché) y **0,28 $ el millón de salida**. La entrada cacheada baja a 0,0028 $.
+Recomiendo **DeepSeek Flash** (`deepseek-flash`, base `https://api.deepseek.com`; hoy lo sirve DeepSeek-V4.1-Flash-1017). El nombre antiguo `deepseek-v4-flash` todavía se acepta, pero ese modelo está retirado y la petición la atiende el mismo Flash. En español sigue el JSON bien y tiene modo JSON.
 
-Un correo normal, ya limpio, más el prompt y cinco fragmentos, son unos 3.000 tokens de entrada y unos 400 de salida. Mil correos, sin caché, salen alrededor de **0,50 $ a 1,20 $**. Con la caché del prompt, menos.
+Ojo: en DeepSeek el modo *thinking* viene **activado por defecto** (esfuerzo alto). Para clasificar no hace falta, tarda más y se cobra. El nodo "Clasificar" manda `thinking: {type: "disabled"}` cuando la base es `api.deepseek.com`; con otro proveedor no lo manda.
+
+Tarifa oficial a 29 de octubre de 2026 (https://api-docs.deepseek.com/quick_start/pricing), por millón de tokens, fuera de hora punta / en hora punta:
+
+| | Fuera de punta | Punta |
+|---|---|---|
+| Entrada sin caché | 0,15 $ | 0,30 $ |
+| Entrada cacheada | 0,003 $ | 0,006 $ |
+| Salida | 0,60 $ | 1,20 $ |
+
+La hora punta es de 01:00 a 04:00 y de 06:00 a 10:00 UTC, de lunes a viernes. El resto, fines de semana incluidos, es fuera de punta.
+
+Un correo normal, ya limpio, más el prompt y cinco fragmentos, son unos 3.000 tokens de entrada y unos 400 de salida. Mil correos, sin caché, salen por unos **0,70 $** fuera de punta y **1,40 $** en punta. Con la caché del prompt, menos.
+
+<!-- E2E: confirmar tokens reales por correo con la prueba real -->
 
 Qwen3.8 Flash (lo que en la práctica es el "Qwen 3.8 Lite") está en unos 0,15 $ / 0,47 $ por millón. GLM-5.3 Flash, en la tarifa de Z.ai, unos 0,15 $ / 0,50 $. Los dos clasifican en español. Salen más caros en la salida, que es justo el JSON. OpenAI queda como alternativa si la empresa ya lo exige: para clasificar no hace falta el modelo de frontera y la factura se nota.
 
