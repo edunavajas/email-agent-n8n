@@ -149,6 +149,7 @@ Hazlos en este orden, que es el de la historia:
 5. **10** vacaciones. No sale correo. Estado `ignorado_autorespuesta`.
 6. **11** el hilo de quince respuestas. Enseña el cuerpo ya limpio: solo la pregunta del horario. `node scripts/check.js` lo comprueba; el cuerpo limpio queda por debajo de 500 caracteres y no contiene "respuesta citada número 15".
 7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila. Con Gmail el reenvío puede no llegar (deduplica por Message-ID): entonces, `POST /webhook/mail-ingest` con el mismo `message_id`.
+8. **Freno anti-bucles.** Manda otra vez el **01**, con Message-ID nuevo (`send.py --only 01`), antes de que pase una hora. No sale solo: llega a Telegram con el borrador, los tres botones y «Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora». Aprobar lo envía, en el hilo. Todos los correos de prueba salen del mismo buzón cliente: cualquier segunda respuesta automática dentro de esa hora hace lo mismo. No es un fallo.
 
 **Issue de GitHub:** el nodo está en el flujo 04. No lo he disparado. No he creado una issue de prueba para no dejar basura antes de la toma. El repo de destino lo creas tú, vacío, delante de cámara o justo antes.
 
@@ -217,6 +218,8 @@ Sin maquillar. Sirve para contarlo.
 7. **Importar por `docker cp` a `/tmp` del contenedor** falla: el proceso es el usuario `node` y `/tmp` queda de root. Hay que dejar los JSON en `/home/node`.
 8. **Copiar el sqlite de n8n como root tira la instancia.** `SQLITE_READONLY` y bucle de arranque. Se arregla devolviendo el fichero al uid 1000. No lo hagas en cámara. No toqué el n8n del otro proyecto.
 9. **No hay buzón, ni bot, ni clave de modelo, ni token de issues en este entorno.** La decisión, el esquema, el RAG vivo y el reinicio sí. El correo saliendo al remitente y el dedo en el botón, no.
+10. **El freno anti-bucles retenía en silencio.** En la prueba con Gmail real, un cliente que preguntó dos cosas en una hora se quedó sin respuesta y sin aviso: la fila se quedaba en `retenido_bucle` y solo salía en el resumen del día siguiente. Ahora el freno sigue cortando el envío automático, pero el correo pasa al 03a y llega a Telegram con el borrador, los tres botones y el motivo.
+11. **`Re: (sin asunto)` rompe el hilo en Gmail.** A un correo sin asunto se le contestaba con `Re: (sin asunto)` y Gmail abría un hilo nuevo, con `In-Reply-To` y `References` correctos. Con `Re:` a secas lo mete en el mismo hilo. Ahora sale así.
 
 ---
 
