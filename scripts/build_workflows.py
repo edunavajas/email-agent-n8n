@@ -1153,7 +1153,7 @@ return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el fluj
 def flow_actions():
     cfg = "$('Configuración').first().json"
     nodes = [
-        sticky("Notas acciones", 80, 40, "### 04 Acciones\n\nBug: issue en el repo de pruebas (sin datos de contacto) y acuse en el hilo.\nUrgente: Telegram al momento y acuse.\nLead: se guarda el contacto y el borrador de seguimiento. No se envía solo.\nSpam: se descarta y se apunta.\n\nSi GitHub falla: `error_accion` y aviso a Telegram."),
+        sticky("Notas acciones", 80, 40, "### 04 Acciones\n\nBug: issue en el repo de pruebas (sin datos de contacto) y acuse en el hilo.\nUrgente: Telegram al momento y acuse.\nLead: se guarda el contacto y el borrador, y llega un aviso a Telegram con la respuesta sugerida. No se envía solo.\nSpam: se descarta y se apunta.\n\nSi GitHub falla: `error_accion` y aviso a Telegram."),
         webhook("Webhook acción", "mail-action", 220, 300, "POST /webhook/mail-action."),
         config_node(460, 300, ["support_address", "telegram_chat_id", "github_repo", "github_api_url"]),
         code("Leer ruta", 700, 300, uuid_guard("route: String(body.route || '')").replace("valid }", "valid: valid && ['spam', 'lead', 'urgent', 'bug'].includes(String(body.route)) }")),
@@ -1166,10 +1166,10 @@ def flow_actions():
   UPDATE mail_messages SET status = 'procesando_accion'
   WHERE id = $1::uuid AND status = 'pendiente' AND route = $2::text
   RETURNING id, message_id, from_address, from_name, subject, body_normalized, draft_reply,
-            references_header, route, created_at
+            reasoning, references_header, route, created_at
 )
 SELECT c.id::text AS id, c.message_id, c.from_address, c.from_name, c.subject, c.body_normalized,
-       c.draft_reply, c.references_header, c.route, c.created_at
+       c.draft_reply, c.reasoning, c.references_header, c.route, c.created_at
 FROM (SELECT 1) AS one LEFT JOIN claimed c ON true""",
             "={{ [$json.mail_id, $json.route] }}",
             "pendiente -> procesando_accion. Dos llamadas no abren dos issues.",
@@ -1209,6 +1209,30 @@ SELECT (SELECT id::text FROM upd) AS id""",
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$json.id] }}",
             "El contacto está en la fila. El borrador de seguimiento no se envía solo.",
+        ),
+        bool_if("¿Lead guardado?", 2240, 400, "={{ !!$json.id }}", "Solo avisa si el UPDATE devolvió id."),
+        code("Texto lead", 2460, 400, """
+const row = $('Reclamar').item.json;
+return { json: { ...row, telegram_text: leadMessage(row), chat_id: $('Configuración').first().json.telegram_chat_id } };
+""", ("format.js",)),
+        telegram(
+            "Avisar lead",
+            2680,
+            400,
+            "={{ $json.chat_id }}",
+            "={{ $json.telegram_text }}",
+            "Aviso al momento, sin botones. Si falla, el lead sigue en lead_registrado y queda error_aviso en mail_actions.",
+        ),
+        postgres(
+            "Anotar aviso lead",
+            2900,
+            400,
+            """INSERT INTO mail_actions (mail_id, action, detail)
+VALUES ($1::uuid, CASE WHEN $2::boolean THEN 'aviso_lead' ELSE 'error_aviso' END,
+        CASE WHEN $2::boolean THEN '{}'::jsonb ELSE jsonb_build_object('flujo', '04 lead', 'error', $3::text) END)
+RETURNING id""",
+            "={{ [$('Texto lead').item.json.id, !$json.error, String(($json.error && ($json.error.message || $json.error.description)) || $json.error || '').slice(0, 400)] }}",
+            "Deja rastro del aviso. Si Telegram falló, el resumen diario sigue contando el lead.",
         ),
         code("Texto urgente", 2240, 620, """
 const row = $json;
@@ -1298,7 +1322,7 @@ const row = $('Issue').item.json;
 const config = $('Configuración').first().json;
 const number = $json.number;
 const url = $json.html_url;
-const text = 'Hemos registrado el problema. Incidencia #' + number + '.\\n' + url;
+const text = 'Hemos registrado el problema con la referencia #' + number + '. Te escribiremos cuando haya novedades.';
 return { json: { ...row, issue_number: number, issue_url: url, automatic: true, to_address: row.from_address, support_address: config.support_address, outgoing_body: text, reply_subject: replySubject(row.subject) } };
 """, ("format.js",)),
         py_code("Enviar acuse bug", 2920, 820, """
@@ -1318,7 +1342,7 @@ result = send_reply(
     os.environ,
 )
 return {"json": {**item, **result}}
-""", "Acuse con el número de la issue, en el mismo hilo."),
+""", "Acuse con la referencia, sin enlace a GitHub, en el mismo hilo."),
         postgres(
             "Cerrar bug",
             3140,
@@ -1383,6 +1407,11 @@ SELECT (SELECT id::text FROM upd) AS id""",
     link(c, "¿Spam?", "Descartar", 0)
     link(c, "¿Spam?", "¿Lead?", 1)
     link(c, "¿Lead?", "Registrar lead", 0)
+    link(c, "Registrar lead", "¿Lead guardado?")
+    link(c, "¿Lead guardado?", "Texto lead", 0)
+    link(c, "Texto lead", "Avisar lead")
+    link(c, "Avisar lead", "Anotar aviso lead", 0)
+    link(c, "Avisar lead", "Anotar aviso lead", 1)
     link(c, "¿Lead?", "¿Urgente?", 1)
     link(c, "¿Urgente?", "Texto urgente", 0)
     link(c, "Texto urgente", "Avisar urgente")

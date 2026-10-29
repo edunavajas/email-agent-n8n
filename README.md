@@ -30,7 +30,7 @@ Correo IMAP
 | `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. | `POST /webhook/mail-reply` |
 | `workflows/03a-aprobacion.json` | Manda el borrador a Telegram y guarda el `message_id`. Se acaba. | `POST /webhook/mail-approval` |
 | `workflows/03b-botones.json` | Recibe el botón (solo del chat del dueño), busca la fila y envía, descarta o pide el texto corregido. | Telegram |
-| `workflows/04-acciones.json` | Issue de GitHub, aviso urgente, lead o descarte. | `POST /webhook/mail-action` |
+| `workflows/04-acciones.json` | Issue de GitHub, aviso urgente, lead (se guarda y avisa por Telegram) o descarte. | `POST /webhook/mail-action` |
 | `workflows/05-resumen.json` | Vence aprobaciones, borra lo viejo y manda el resumen. | Cada día a las 06:00 UTC, o el botón "Resumen ahora". |
 
 ### Por qué el 3 son dos flujos
@@ -100,7 +100,28 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
    | `approval_hours` | 02, 03a | 24. |
    | `retention_days` | 05 | 90. |
 
-6. Indexa `kb/faq-soporte.md` con el flujo 04 del episodio 2 o con el MCP, **sin** `replace_all` si ya tienes otros documentos de repositorio. Si mandas un lote con `replace_all: true`, el flujo 04 borra del índice los ficheros que no vengan en ese lote. Para esta FAQ basta un documento con `source_type: repo` y `external_id: email-agent/faq-soporte.md`.
+6. Indexa `kb/faq-soporte.md` con el flujo 04 del episodio 2 (`POST /webhook/rag-index-repo`) o con el MCP. Ese flujo **exige** `replace_all: true` (sin él da error) y trata el lote como el estado completo del repositorio: borra del índice los documentos `source_type: repo` que no vengan en el lote. No toca los de Outline. Así que:
+
+   - Si la FAQ es tu único documento de repo, mándala con `replace_all: true` sin miedo.
+   - Si ya tienes otros documentos de repo, mándalos **todos en el mismo lote**, o desaparecerán del índice.
+
+   ```bash
+   jq -n --rawfile content kb/faq-soporte.md '{
+     replace_all: true,
+     documents: [{
+       source_type: "repo",
+       external_id: "email-agent/faq-soporte.md",
+       title: "FAQ de soporte",
+       collection: "repositorio",
+       content: $content
+     }]
+   }' | curl -sS -X POST https://n8n.tudominio.com/webhook/rag-index-repo \
+     -H 'X-RAG-API-Key: <clave>' \
+     -H 'Content-Type: application/json' \
+     --data-binary @-
+   ```
+
+   Es asíncrono: responde `Workflow was started` al momento y el indexado tarda unos 20 s. Comprueba con una búsqueda en `/webhook/rag-search` antes de seguir.
 
 7. Publica (*Publish*) los seis flujos: en n8n 2.x publicar es lo que antes era activar. Empieza por 02, 03a, 04 y 03b, y deja el 01 para el final: es el que lee el buzón. El 03b registra el webhook en Telegram al publicarse.
 
@@ -244,6 +265,7 @@ Ningún error se queda callado. Cada uno deja la fila en un estado y, si se pued
 | El SMTP (o el runner de Python) | `error_envio` | Telegram con Reintentar, Rechazar y Editar |
 | Telegram no acepta el aviso de aprobación | `error_aviso` | No se puede avisar por Telegram: sale en el resumen |
 | GitHub no crea la issue | `error_accion` | Telegram |
+| Telegram no acepta el aviso de un lead | el lead sigue en `lead_registrado` | `error_aviso` en `mail_actions`; el lead sale en el resumen |
 | El 03b no consigue llamar al 02 | vuelve a `esperando_aprobacion` | Telegram: pulsa Aprobar otra vez cuando esté |
 
 El resumen cuenta las filas en error y las que llevan más de una hora a medio camino.
@@ -274,7 +296,9 @@ El log de lo que se hizo está en `mail_actions`. Un botón o un texto de otro c
 
 `retention_days` (90) está en el flujo 05. Cada mañana borra las filas más viejas y, en cascada, su log (y los `telegram_ajeno` viejos). Si lo bajas, olvidas antes. Si lo subes, guardas más correo de clientes.
 
-La issue de GitHub es otra copia, y el repo de pruebas suele ser público. Por eso lleva lo mínimo: el asunto y el cuerpo con correos, teléfonos, IBAN, DNI y números largos tapados, las URL sin parámetros, el texto dentro de un bloque de código (un `@usuario` no avisa a nadie) y una referencia interna (el `id` de la fila). No lleva remitente, ni Message-ID, ni enlace `mailto`. Quién escribió se mira en `mail_messages` con esa referencia. Aun así, el tapado es por patrones: un nombre propio en el cuerpo se queda. Con correo real, mejor un repo privado.
+La issue de GitHub es otra copia, y el repo de pruebas suele ser público. Por eso lleva lo mínimo: el asunto y el cuerpo con correos, teléfonos, IBAN, DNI y números largos tapados, las URL sin parámetros, el texto dentro de un bloque de código (un `@usuario` no avisa a nadie) y una referencia interna (el `id` de la fila). No lleva remitente, ni Message-ID, ni enlace `mailto`. Quién escribió se mira en `mail_messages` con esa referencia. El acuse al cliente tampoco lleva el enlace de la issue: solo la referencia (#N). Un repo privado le daría un 404 y, además, enseñaría tu herramienta interna. El número y la URL de la issue se guardan en `mail_messages` (`github_issue_number`, `github_issue_url`) para ti.
+
+El aviso de lead a Telegram lleva el remitente, el asunto, el motivo y la respuesta sugerida. Es otra copia del correo, en el chat del dueño. Aun así, el tapado es por patrones: un nombre propio en el cuerpo se queda. Con correo real, mejor un repo privado.
 
 ## Idempotencia y bucles
 
@@ -335,9 +359,9 @@ python3 test-emails/send.py --resend 01   # reutiliza el Message-ID del último 
 | 01 Consulta clara | Horario, que está en la FAQ. Respuesta sola, con fuente. |
 | 02 Ambigua | Muy corta. A Telegram. |
 | 03 Fuera de la base | SAP. A Telegram, no se inventa un conector. |
-| 04 Bug con detalle | Acuse en el hilo e issue en el repo de pruebas, sin el correo del remitente. |
+| 04 Bug con detalle | Acuse en el hilo con la referencia (#N), sin enlace a GitHub, e issue en el repo de pruebas, sin el correo del remitente. |
 | 05 Bug mal escrito | También issue. |
-| 06 Lead | Se guarda el contacto y el borrador. No se envía solo. |
+| 06 Lead | Se guarda el contacto (`lead_registrado`) y llega a Telegram un aviso "Lead nuevo" con la respuesta sugerida, sin botones. No se envía solo: contestas tú. |
 | 07 Urgente | Telegram al momento. |
 | 08 Spam | No se contesta. La fila queda como descartado. |
 | 09 Inyección | No promete el reembolso. Llega a Telegram sin borrador y sin Aprobar. |
