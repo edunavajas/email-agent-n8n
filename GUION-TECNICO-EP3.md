@@ -61,12 +61,12 @@ Hazlas antes de importar. Los nombres en negrita son los que buscan los nodos.
 1. **PostgreSQL.** La misma del episodio 2. Host `knowledge-db`.
 2. **RAG API Key.** La misma cabecera `X-RAG-API-Key`.
 3. **Mail API Key.** Nueva. Cabecera `X-MAIL-API-Key`. Te la inventas: es la misma credencial en los webhooks internos y en los HTTP que los llaman.
-4. **IMAP** del buzón `soporte@`. Hostinger: `imap.hostinger.com:993`.
+4. **IMAP** del buzón del agente: un Gmail gratuito con contraseña de aplicación (`imap.gmail.com:993`, SSL). Alternativa de pago o de empresa: ver README, «Otro buzón».
 5. **LLM API.** Header `Authorization`, valor `Bearer sk-...`. DeepSeek V4 Flash.
 6. **Telegram.** Token de BotFather. Un solo bot: Telegram no admite dos triggers del mismo bot.
 7. **GitHub Issues.** Fine-grained, solo Issues, repo vacío. No el de un producto.
 
-El **SMTP no es una credencial de n8n.** Lo envía un Code node de Python para poder poner `In-Reply-To` y `References` (el nodo Send Email no tiene esos campos). En Coolify, en el servicio de n8n, contenedor `task-runners`: monta `runners/n8n-task-runners.json` en `/etc/n8n-task-runners.json` y añade `SMTP_HOST=smtp.hostinger.com`, `SMTP_PORT=465`, `SMTP_SECURITY=ssl`, `SMTP_USER` y `SMTP_PASSWORD`. Reinicia el servicio entero.
+El **SMTP no es una credencial de n8n.** Lo envía un Code node de Python para poder poner `In-Reply-To` y `References` (el nodo Send Email no tiene esos campos). En Coolify, en el servicio de n8n, contenedor `task-runners`: monta `runners/n8n-task-runners.json` en `/etc/n8n-task-runners.json` y añade `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_SECURITY=ssl`, `SMTP_USER` (la dirección de Gmail) y `SMTP_PASSWORD` (la misma contraseña de aplicación). Reinicia el servicio entero.
 
 **TARDA:** si las tienes en un gestor, 8–12 minutos. BotFather y el token de GitHub son lo que más se alarga si no están creados. No lo he cronometrado con un alta nueva: no había buzón ni bot en esta máquina.
 
@@ -148,7 +148,7 @@ Hazlos en este orden, que es el de la historia:
 4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
 5. **10** vacaciones. No sale correo. Estado `ignorado_autorespuesta`.
 6. **11** el hilo de quince respuestas. Enseña el cuerpo ya limpio: solo la pregunta del horario. `node scripts/check.js` lo comprueba; el cuerpo limpio queda por debajo de 500 caracteres y no contiene "respuesta citada número 15".
-7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila.
+7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila. Con Gmail el reenvío puede no llegar (deduplica por Message-ID): entonces, `POST /webhook/mail-ingest` con el mismo `message_id`.
 
 **Issue de GitHub:** el nodo está en el flujo 04. No lo he disparado. No he creado una issue de prueba para no dejar basura antes de la toma. El repo de destino lo creas tú, vacío, delante de cámara o justo antes.
 
@@ -280,4 +280,4 @@ Probado en un n8n 2.10.2 desechable (`n8nio/n8n:2.10.2` + `n8nio/runners:2.10.2`
 | SMTP caído, GitHub caído, 02 y 03a sin publicar | `error_envio` / `error_accion` / `error_interno` y aviso a Telegram. Reintentar envía cuando vuelve |
 | 05: vence, purga (también botones ajenos viejos) y manda el resumen | Sí |
 
-Queda para la prueba con lo real: el buzón de Hostinger por IMAP y SMTP 465, el bot de verdad (botones con el dedo, `force_reply` en el móvil), DeepSeek devolviendo JSON y una issue en GitHub. Y cómo pinta el hilo en Gmail, Outlook y Apple Mail.
+Queda para la prueba con lo real: el buzón de Gmail por IMAP y SMTP 465, el bot de verdad (botones con el dedo, `force_reply` en el móvil), DeepSeek devolviendo JSON y una issue en GitHub. Y cómo pinta el hilo en Gmail, Outlook y Apple Mail.

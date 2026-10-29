@@ -1,6 +1,6 @@
 # email-agent-n8n
 
-Agente de correo del episodio 3 de **Mi Empleado Digital**. Llega un email a `soporte@tudominio.com`, el sistema lo limpia, lo clasifica con la base de conocimiento del episodio 2 y actúa. Lo que no tiene claro se lo pasa a una persona por Telegram. Cada mañana manda un resumen con números.
+Agente de correo del episodio 3 de **Mi Empleado Digital**. Llega un email al buzón del agente (un Gmail gratuito, ver [Buzón: Gmail gratuito](#buzón-gmail-gratuito)), el sistema lo limpia, lo clasifica con la base de conocimiento del episodio 2 y actúa. Lo que no tiene claro se lo pasa a una persona por Telegram. Cada mañana manda un resumen con números.
 
 No es un flujo con un nodo Wait. El estado vive en PostgreSQL. Si n8n se reinicia, el botón de Telegram sigue valiendo porque la fila sigue ahí.
 
@@ -43,6 +43,8 @@ Cada paso es un `UPDATE ... WHERE status = '<el de antes>'` en una sola sentenci
 
 Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2 y el webhook `POST /webhook/rag-search`.
 
+0. Prepara el buzón del agente: [Buzón: Gmail gratuito](#buzón-gmail-gratuito). Necesitas la dirección y una contraseña de aplicación de 16 letras.
+
 1. Aplica el esquema en la misma base del episodio 2 (host `knowledge-db`, base `knowledge`):
 
    ```bash
@@ -53,7 +55,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
 
 2. Prepara el contenedor de **task runners** para el envío por SMTP (ver [Hilo del correo](#hilo-del-correo)). En Coolify, en el servicio de n8n:
    - Añade al servicio `task-runners` un fichero montado en `/etc/n8n-task-runners.json` con el contenido de `runners/n8n-task-runners.json`. Tiene que poder leerlo el usuario 1000 (permisos 644).
-   - Añade al mismo servicio las variables `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER` y `SMTP_PASSWORD` del buzón `soporte@`. En Hostinger: `smtp.hostinger.com`, `465`, `ssl`.
+   - Añade al mismo servicio las variables `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER` y `SMTP_PASSWORD` del buzón del agente. Con Gmail: `smtp.gmail.com`, `465`, `ssl`, y usuario y contraseña de aplicación iguales a los de la credencial IMAP. Con otro buzón, ver [Otro buzón](#otro-buzón-hostinger-business-email-o-el-de-vuestra-empresa).
    - Reinicia el servicio. El contenedor de n8n no cambia.
 
    En el compose del servicio (*Edit Compose File*), el bloque `task-runners` queda así (lo demás, como venía en la plantilla):
@@ -87,7 +89,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
 
    | Campo | Flujos | Qué poner |
    |---|---|---|
-   | `support_address` | 01, 02, 04 | El buzón, `soporte@tudominio.com`. Es el From y el Reply-To. |
+   | `support_address` | 01, 02, 04 | La dirección del buzón del agente, la misma de `SMTP_USER`. Es el From y el Reply-To. Con Gmail, si no coincide, Gmail reescribe el From. |
    | `telegram_chat_id` | todos | Tu chat con el bot (número). Solo ese chat puede pulsar botones. |
    | `telegram_user_ids` | 03b | Vacío si el chat es privado. Si es un grupo, los id de quienes pueden decidir, separados por comas. |
    | `n8n_url` | 01, 03b | `http://localhost:5678`: n8n se llama a sí mismo, sin salir a internet. |
@@ -102,11 +104,71 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
 
 7. Publica (*Publish*) los seis flujos: en n8n 2.x publicar es lo que antes era activar. Empieza por 02, 03a, 04 y 03b, y deja el 01 para el final: es el que lee el buzón. El 03b registra el webhook en Telegram al publicarse.
 
+## Buzón: Gmail gratuito
+
+Es la opción por defecto: gratis, sin dominio y sin pagar un buzón aparte. Para un buzón de empresa, ver [Otro buzón](#otro-buzón-hostinger-business-email-o-el-de-vuestra-empresa).
+
+1. Activa la **verificación en dos pasos** de la cuenta de Gmail del agente.
+2. Crea una **contraseña de aplicación** en https://myaccount.google.com/apppasswords. Son 16 letras. Pégala **sin espacios**. No es la contraseña de la cuenta.
+3. IMAP no hay que tocarlo: según Google, el acceso IMAP siempre está activado en Gmail y las opciones Habilitar/Inhabilitar IMAP se retiraron en enero de 2025. No hay nada que activar en Ajustes.
+
+Dónde va cada cosa:
+
+| Dónde | Qué poner |
+|---|---|
+| Credencial **IMAP** de n8n | User = la dirección completa de Gmail. Password = la contraseña de aplicación. Host `imap.gmail.com`. Port `993`. SSL/TLS activado. |
+| Variables `SMTP_*` del servicio n8n en Coolify (las lee el contenedor `task-runners`) | `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, `SMTP_SECURITY=ssl`, `SMTP_USER` = la dirección, `SMTP_PASSWORD` = la misma contraseña de aplicación. |
+| Campo `support_address` del nodo Configuración | Esa misma dirección. Si no coincide con la cuenta que inicia sesión, Gmail reescribe el From. |
+
+### Cuándo no sale la opción de contraseñas de aplicación
+
+No aparece si:
+
+- la verificación en dos pasos usa solo llaves de seguridad,
+- la cuenta es de trabajo, de un centro educativo o de una organización (Google Workspace),
+- la cuenta tiene activada la Protección Avanzada.
+
+Cambiar la contraseña de la cuenta **revoca todas** las contraseñas de aplicación. Si el agente deja de entrar de un día para otro, mira eso primero. Fuente: https://support.google.com/accounts/answer/185833?hl=es
+
+### Gmail frente a un buzón de dominio
+
+Hechos comprobados en la documentación de Google:
+
+- **Límite de envío**: 500 mensajes al día o 500 destinatarios del mismo correo en una cuenta personal. Al pasarlo, Gmail dice "Has llegado al límite de mensajes que puedes enviar" y se vuelve a enviar con normalidad tras 1 a 24 horas. Para este agente sobra, pero no es un buzón para un volumen alto. Fuente: https://support.google.com/mail/answer/22839?hl=es
+- **Clientes IMAP**: hasta 15 conectados a la vez por cuenta. Fuente: https://support.google.com/mail/answer/7126229?hl=es
+- **Enviados**: Gmail guarda solo la copia en Enviados de lo que sale por su SMTP. No hace falta ni conviene guardar enviados por IMAP. Lo que se borra desde un cliente IMAP queda en "Todos".
+- **Spam**: Gmail filtra el spam antes de que llegue al cliente. En IMAP las etiquetas aparecen como carpetas y el flujo 01 lee solo `INBOX` (acción posterior `read`, formato simple). Lo que Gmail mande a Spam no está en `INBOX` y el flujo no lo ve. Fuente: https://support.google.com/mail/answer/78892?hl=es
+- **Remitente**: Gmail pone como From la cuenta que inicia sesión, salvo que la dirección sea un alias suyo. Por eso `support_address` tiene que ser esa cuenta.
+
+<!-- E2E: confirmar en la prueba real: si los correos de prueba caen en Spam o en Promociones -->
+<!-- E2E: confirmar en la prueba real: si la respuesta aparece en el mismo hilo en Gmail -->
+<!-- E2E: confirmar en la prueba real: si el nodo IMAP los marca como leídos en la web de Gmail -->
+<!-- E2E: confirmar en la prueba real: si Gmail conserva el Message-ID propio de la respuesta (reply_message_id) -->
+
+## Otro buzón: Hostinger Business Email o el de vuestra empresa
+
+El flujo habla IMAP para leer y SMTP para enviar. Vale cualquier buzón que dé las dos cosas con usuario y contraseña.
+
+**Hostinger Business Email.** Es un producto de pago aparte. Los datos salen de hPanel → Correos → Configurar dispositivos:
+
+- IMAP: `imap.hostinger.com`, puerto 993, SSL.
+- SMTP: `smtp.hostinger.com`, puerto 465, SSL (`SMTP_SECURITY=ssl`).
+- Límites oficiales (https://www.hostinger.com/support/4625828-parameters-and-limits-of-hostinger-email): Business Starter 1.000 mensajes al día y Business Premium 3.000. Entrada y salida cuentan por separado, en una ventana móvil de 24 horas, por buzón. Las pruebas gratuitas y el antiguo Free Business Email, 100 al día. 100 destinatarios por mensaje.
+
+**El buzón de vuestra empresa.** Pedid a vuestro proveedor:
+
+- host y puerto IMAP (con SSL),
+- host y puerto SMTP: 465 con SSL (`SMTP_SECURITY=ssl`) o 587 con STARTTLS (`SMTP_SECURITY=starttls`).
+
+Si el proveedor solo admite OAuth y no contraseña, este flujo no sirve tal cual.
+
+Se cambia en los mismos tres sitios que con Gmail: credencial IMAP, variables `SMTP_*` de Coolify y `support_address`.
+
 ## Credenciales
 
 | Credencial en n8n | Tipo | Dónde se saca | Quién la usa |
 |---|---|---|---|
-| IMAP | IMAP | Hostinger → hPanel → Correos → el buzón `soporte@`. Host `imap.hostinger.com`, puerto 993, SSL. | Nodo "Correo IMAP". |
+| IMAP | IMAP | Gmail: User = dirección completa, Password = contraseña de aplicación, Host `imap.gmail.com`, puerto 993, SSL/TLS activado (ver [Buzón: Gmail gratuito](#buzón-gmail-gratuito)). | Nodo "Correo IMAP". |
 | RAG API Key | Header Auth, cabecera `X-RAG-API-Key` | La misma clave que inventaste en el episodio 2. | "Buscar RAG". |
 | Mail API Key | Header Auth, cabecera `X-MAIL-API-Key` | Te la inventas, igual que la del RAG. La misma en los webhooks y en quien los llama. | Webhooks internos y los HTTP que los disparan. |
 | LLM API | Header Auth, cabecera `Authorization`, valor `Bearer sk-...` | Consola de DeepSeek (o el proveedor que elijas). | "Clasificar". |
@@ -239,13 +301,20 @@ python3 scripts/check_mail.py             # el envío por SMTP en el hilo, con u
 python3 scripts/build_workflows.py --check  # los JSON están al día con src/ y prompts/
 ```
 
-Doce ficheros en `test-emails/`. El script los manda tal cual, Message-ID incluido:
+Doce ficheros en `test-emails/`. `send.py` los manda desde un **buzón cliente**: otra cuenta de Gmail, distinta de la del agente, con su propia contraseña de aplicación. Se rellena en el `.env` (`CLIENT_EMAIL`, `CLIENT_PASSWORD`, `CLIENT_SMTP_HOST`, `CLIENT_SMTP_PORT`). Sin esas variables usa `SMTP_*`, como antes.
+
+El script reescribe `To` (la dirección del agente, `IMAP_USER`) y `From` (el nombre del `.eml` más el buzón cliente), porque Gmail reescribe el From si no es de la cuenta que inicia sesión. Cada envío lleva un **Message-ID nuevo**: Gmail descarta en silencio un correo cuyo Message-ID ya tiene, y con ids fijos el segundo ensayo no llegaría. Los ids del último envío quedan en `test-emails/.ultimo-envio.json` (no se sube). No imprime direcciones: solo `enviado 01-consulta-clara.eml (Message-ID <...>)`.
 
 ```bash
 cp .env.example .env
+python3 test-emails/send.py --dry-run     # monta los mensajes y dice qué enviaría, sin conectarse
 python3 test-emails/send.py
-python3 test-emails/send.py --resend 01
+python3 test-emails/send.py --resend 01   # reutiliza el Message-ID del último envío de ese correo
 ```
+
+`--resend 01` es la prueba de duplicados. Con Gmail, ese reenvío puede no llegar al buzón (Gmail deduplica por Message-ID). Si no llega, la prueba de duplicados se hace con `POST /webhook/mail-ingest` y el mismo `message_id` dos veces.
+
+<!-- E2E: confirmar en la prueba real si el reenvío con el mismo Message-ID llega o lo descarta Gmail -->
 
 | Fichero | Qué tiene que pasar |
 |---|---|
