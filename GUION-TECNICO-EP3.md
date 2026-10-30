@@ -121,7 +121,7 @@ Pregunta de control que hice: "integración con SAP". El mejor fragmento fue una
 - Si el SMTP falla, el mensaje dice «⚠️ Falló el envío: …» y llega otro aviso con Reintentar. Si el 03b no llega al 02, los botones vuelven al mensaje para pulsar Aprobar otra vez.
 - Solo vale tu chat (`telegram_chat_id`). Un botón desde otro chat no hace nada y queda apuntado como `telegram_ajeno`.
 
-**NO HE PULSADO NINGÚN BOTÓN.** No hay token de Telegram en el n8n del episodio. Los flujos están importados y parados.
+**PROBADO EN REAL (30-10-2026):** Aprobar con el dedo (sale en el hilo en ~2 s), Editar hasta que llega «✏️ …» y la fila pasa a `esperando_edicion`, y los botones que desaparecen. Lo que no se ha probado con el dedo: responder al bot con el texto y que salga (sí en `scripts/check.js`).
 
 **SI FALLA:** si los botones no se van, abre la ejecución del 03b y mira «Quitar botones»: va con *Continue*, así que sale aunque Telegram diga que no ("message is not modified" = el mensaje ya tenía ese texto). "Botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
 
@@ -185,8 +185,8 @@ Córtalos o prepáralos. No son el contenido.
 | Embedding de la FAQ | ~9 s | El curl del TEI sin pintar nada. |
 | Una búsqueda RAG | ~4 s | El webhook pensando. |
 | Reinicio limpio de n8n | ~10 s hasta que lista los flujos | El editor "connection lost". |
-| Clasificación con DeepSeek | No la he llamado. Cuenta 3–8 s y ten un plano del móvil. | El nodo Clasificar en "running". |
-| IMAP desde que mandas el correo | No lo he medido. El nodo usa IDLE; a veces es segundos y a veces un minuto. | La bandeja. |
+| Correo con respuesta sola, de enviar a tenerlo en el buzón | 25-31 s | Executions del 01 y la bandeja. |
+| IMAP desde que mandas el correo | 25 s a 2,5 min (casi siempre menos de 1 min), medido con Gmail | La bandeja. |
 | Alta de BotFather y token de GitHub | No cronometrada. Hazlas antes de darle a grabar. | — |
 
 ---
@@ -248,21 +248,21 @@ El 05 (bug vago) y el 06 (lead) mételos si te sobra tiempo. Están en el repo p
 | Punto | ¿Lo ejecuté? |
 |---|---|
 | Crear las tablas con `schema.sql` en el Postgres del episodio 2 | Sí |
-| Importar los seis flujos en el n8n del episodio 2 | Sí. Inactivos. Sin credenciales nuevas asignadas |
-| Configurar IMAP, SMTP, Telegram, LLM y GitHub dentro de n8n | No. No están esas credenciales |
-| Mandar los 12 correos a un buzón | No |
-| El 1 se responde solo y llega al remitente | No. La ruta `auto` está probada en `scripts/check.js` y la FAQ sale del RAG vivo con score ~0,90 |
-| El 2 y el 3 llegan a Telegram | No |
-| Aprobar / Rechazar / Editar con el dedo | No |
-| El 4 crea la issue | No. El nodo está. No disparé la API |
-| El 7 dispara aviso inmediato | No |
-| El 8 se descarta y queda registrado | La regla está en el código y en el test. No hay fila real de ese correo |
-| El 9 no consigue el reembolso | Sí, en `scripts/check.js`: inyección detectada y el borrador que prometía el dinero no sale |
+| Importar los seis flujos en el n8n del episodio 2 | Sí, publicados y con credenciales en la prueba real |
+| Configurar IMAP, SMTP, Telegram, LLM y GitHub dentro de n8n | Sí (30-10-2026), con Gmail y contraseña de aplicación |
+| Mandar correos de prueba a un buzón | Sí, a mano desde un Gmail personal; bug, lead y spam también por `mail-ingest` |
+| El 1 se responde solo y llega al remitente | Sí: 0,90, en el mismo hilo, 25-31 s |
+| El 2 y el 3 llegan a Telegram | El 2 sí (0,30). El 3 (SAP) llegó como lead (0,85) |
+| Aprobar / Rechazar / Editar con el dedo | Aprobar sí. Editar hasta pedir el texto. Rechazar solo en el arnés |
+| El 4 crea la issue | Sí: issue con `[correo]` y `[teléfono]`, acuse con la referencia y «🐞 Bug registrado» |
+| El 7 dispara aviso inmediato | Sí: acuse en el hilo y «🚨 URGENTE» |
+| El 8 se descarta y queda registrado | Sí: spam 0,98, `descartado`, sin respuesta ni aviso |
+| El 9 no consigue el reembolso | Sí, en real: «🛑 Bloqueado» (0,10), sin borrador ni Aprobar. Y en `scripts/check.js` |
 | El 10 no genera respuesta | Sí, en el test: `Auto-Submitted` + `X-Autoreply` se ignoran |
 | El 11 se queda sin la cadena citada | Sí, en el test |
 | Reenviar el mismo Message-ID no crea otra fila | Sí, en Postgres |
-| Reiniciar n8n con una fila esperando aprobación | Sí. La fila seguía. El botón de un bot real, no lo pulsé |
-| El resumen diario con números | La SQL de contar, vencer y borrar está probada. El mensaje de Telegram, no |
+| Reiniciar n8n con una fila esperando aprobación | Sí. La fila seguía. Pulsar el botón después del reinicio, no |
+| El resumen diario con números | Sí: «📊 Resumen de ayer» a mano y el automático de las 06:00 UTC |
 
 El episodio 2 sigue respondiendo al RAG después de los reinicios. Outline no se ha tocado.
 
