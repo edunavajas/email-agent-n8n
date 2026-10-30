@@ -31,7 +31,7 @@ Correo IMAP
 | `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. Si salta el freno anti-bucles, pasa el correo al 03a. | `POST /webhook/mail-reply` |
 | `workflows/03a-aprobacion.json` | Manda el borrador a Telegram y guarda el `message_id`. Se acaba. | `POST /webhook/mail-approval`, desde el 01 o el 02 |
 | `workflows/03b-botones.json` | Recibe el botón (solo del chat del dueño), busca la fila y envía, descarta o pide el texto corregido. | Telegram |
-| `workflows/04-acciones.json` | Issue de GitHub, aviso urgente, lead (se guarda y avisa por Telegram) o descarte. | `POST /webhook/mail-action` |
+| `workflows/04-acciones.json` | Issue de GitHub (y aviso del bug a Telegram), aviso urgente, lead (se guarda y avisa por Telegram) o descarte. | `POST /webhook/mail-action` |
 | `workflows/05-resumen.json` | Vence aprobaciones, borra lo viejo y manda el resumen. | Cada día a las 06:00 UTC, o el botón "Resumen ahora". |
 
 ### Por qué el 3 son dos flujos
@@ -194,7 +194,7 @@ Se cambia en los mismos tres sitios que con Gmail: credencial IMAP, variables `S
 | RAG API Key | Header Auth, cabecera `X-RAG-API-Key` | La misma clave que inventaste en el episodio 2. | "Buscar RAG". |
 | Mail API Key | Header Auth, cabecera `X-MAIL-API-Key` | Te la inventas, igual que la del RAG. La misma en los webhooks y en quien los llama. | Webhooks internos y los HTTP que los disparan. |
 | LLM API | Header Auth, cabecera `Authorization`, valor `Bearer sk-...` | Consola de DeepSeek (o el proveedor que elijas). | "Clasificar". |
-| Telegram | Telegram API | BotFather: `/newbot`. El chat id sale al escribirle al bot y abrir `getUpdates`. | Los seis: botones (03a, 03b), urgentes (04), resumen (05) y avisos de fallo (01, 02, 04). |
+| Telegram | Telegram API | BotFather: `/newbot`. El chat id sale al escribirle al bot y abrir `getUpdates`. | Los seis: botones (03a, 03b), urgentes, bugs y leads (04), resumen (05) y avisos de fallo (01, 02, 03b, 04). |
 | GitHub Issues | Header Auth, cabecera `Authorization`, valor `Bearer github_pat_...` | GitHub → Settings → Developer settings → Fine-grained token. Solo permiso **Issues** sobre el repo de pruebas. | "Crear issue". |
 | PostgreSQL | Postgres | La del episodio 2. Host `knowledge-db`, puerto 5432, base `knowledge`. | Todos los nodos de base de datos. |
 
@@ -249,6 +249,39 @@ Para cambiarlo: edita el Markdown, ejecuta `python3 scripts/build_workflows.py` 
 
 `approval_hours` es 24. El 03a guarda `approval_due_at`. El flujo 05, a las 06:00 UTC, pasa esas filas (y las que se quedaron a medias en Editar) a `aprobacion_vencida` y las cuenta en el resumen. No se envían solas. Si alguien pulsa un botón después del plazo, aunque el 05 aún no haya pasado, el 03b no envía: marca la fila vencida y el botón lo dice.
 
+## Avisos de Telegram
+
+Todos tienen la misma forma: emoji y título en negrita, los campos uno por línea («De:», «Asunto:»…) y los bloques separados. El texto del correo, el borrador y la respuesta sugerida van en una cita. Todo lo que viene del correo se escapa (`parse_mode` HTML). Si no cabe en un mensaje de Telegram, se recorta solo ese bloque largo y se dice; los avisos y el pie no se recortan nunca.
+
+| Aviso | Flujo | Lleva |
+|---|---|---|
+| 📝 **Borrador para aprobar** | 03a | De, Asunto, categoría y confianza, 🔁 si lo retuvo el freno anti-bucles, ⚠️ si es un tema sensible, por qué, el borrador y las fuentes. Botones Aprobar, Rechazar y Editar. |
+| 🛑 **Bloqueado: intenta dar órdenes** | 03a | Lo mismo, sin borrador ni Aprobar. Si lo bloqueó el borrador, el título dice «…el borrador prometía dinero» o «…repetía instrucciones internas». |
+| 🚨 **URGENTE** | 04 | De, Asunto, el texto del correo y «📨 Ya le hemos mandado un acuse automático.» (o que no salió, y por qué). |
+| 💼 **Lead nuevo** | 04 | De, Asunto, motivo, la respuesta sugerida (no enviada) y «No se ha contestado: escríbele tú.». |
+| 🐞 **Bug registrado** | 04 | De, el número y el enlace de la issue, su título y si salió el acuse. |
+| ⚠️ **Fallo: …** | 01, 02, 03b, 04 | Qué falló, la fila, el error y qué hacer. |
+| 📊 **Resumen de ayer** | 05 | Contestado / Pendiente de ti / Descartado / Problemas. Las líneas a 0 no salen, salvo «Esperando aprobación» y «Con error». Al final, «✅ Nada pendiente de ti.» o «👉 Te toca: …». |
+
+Un borrador para aprobar, con datos inventados (en el móvil, las negritas y la cita se ven con formato):
+
+```
+📝 Borrador para aprobar
+De: Ana Ruiz <ana@cliente.example>
+Asunto: Horario de soporte
+Categoría: consulta frecuente · confianza 62 %
+
+Por qué: Está en la FAQ, pero la pregunta es muy corta.
+
+Borrador
+│ Hola, Ana:
+│ Atendemos de lunes a viernes de 9:00 a 18:00.
+
+Fuentes
+• FAQ de soporte — Taller Norte (2026-10-17)
+  https://docs.example.com/doc/faq-soporte
+```
+
 ## Botones de Telegram
 
 - Solo cuenta el chat de `telegram_chat_id` (y las personas de `telegram_user_ids`, si lo rellenas). Un botón o un texto de cualquier otro chat no hace nada, no recibe respuesta y queda apuntado como `telegram_ajeno`. Mientras `telegram_chat_id` tenga el valor de ejemplo, no vale nadie.
@@ -265,7 +298,7 @@ Ningún error se queda callado. Cada uno deja la fila en un estado y, si se pued
 | El 01 no consigue llamar al 02, 03a o 04 (flujo sin publicar, `n8n_url` o Mail API Key mal) | `error_interno` | Telegram desde el 01 |
 | El SMTP (o el runner de Python) | `error_envio` | Telegram con Reintentar, Rechazar y Editar |
 | Telegram no acepta el aviso de aprobación | `error_aviso` | No se puede avisar por Telegram: sale en el resumen |
-| GitHub no crea la issue | `error_accion` | Telegram |
+| GitHub no crea la issue | `error_accion` | Telegram («⚠️ Fallo: no se pudo crear la issue») |
 | Telegram no acepta el aviso de un lead | el lead sigue en `lead_registrado` | `error_aviso` en `mail_actions`; el lead sale en el resumen |
 | El 03b no consigue llamar al 02 | vuelve a `esperando_aprobacion` | Telegram: pulsa Aprobar otra vez cuando esté |
 | El 02 no consigue llamar al 03a con un correo retenido por el freno anti-bucles | sigue en `retenido_bucle` | Telegram desde el 02, sin botones. El resumen la cuenta como atascada |
@@ -300,7 +333,7 @@ El log de lo que se hizo está en `mail_actions`. Un botón o un texto de otro c
 
 La issue de GitHub es otra copia, y el repo de pruebas suele ser público. Por eso lleva lo mínimo: el asunto y el cuerpo con correos, teléfonos, IBAN, DNI y números largos tapados, las URL sin parámetros, el texto dentro de un bloque de código (un `@usuario` no avisa a nadie) y una referencia interna (el `id` de la fila). No lleva remitente, ni Message-ID, ni enlace `mailto`. Quién escribió se mira en `mail_messages` con esa referencia. El acuse al cliente tampoco lleva el enlace de la issue: solo la referencia (#N). Un repo privado le daría un 404 y, además, enseñaría tu herramienta interna. El número y la URL de la issue se guardan en `mail_messages` (`github_issue_number`, `github_issue_url`) para ti.
 
-El aviso de lead a Telegram lleva el remitente, el asunto, el motivo y la respuesta sugerida. Es otra copia del correo, en el chat del dueño. Aun así, el tapado es por patrones: un nombre propio en el cuerpo se queda. Con correo real, mejor un repo privado.
+El aviso de lead a Telegram lleva el remitente, el asunto, el motivo y la respuesta sugerida. Es otra copia del correo, en el chat del dueño. El aviso urgente lleva además el texto del correo. El de bug, solo el remitente, el número y el enlace de la issue (es interno), su título (ya tapado) y si salió el acuse. Aun así, el tapado es por patrones: un nombre propio en el cuerpo se queda. Con correo real, mejor un repo privado.
 
 ## Idempotencia y bucles
 
@@ -316,7 +349,7 @@ El flujo 02 no manda sola una respuesta a una dirección que ya recibió una res
 
 1. La fila pasa a `retenido_bucle` y queda anotada en `mail_actions` (`retenido_bucle`).
 2. El 02 llama al 03a: `POST /webhook/mail-approval` con `{"mail_id": "...", "reason": "bucle"}`.
-3. A Telegram llega el borrador con Aprobar, Editar y Rechazar, y el aviso «Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.».
+3. A Telegram llega el borrador con Aprobar, Editar y Rechazar, y el aviso «🔁 Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.».
 4. Si apruebas, sale por el camino manual del 02, que no tiene freno. Si nadie pulsa, vence como cualquier aprobación.
 
 Un correo bloqueado (inyección o promesa de dinero) no pasa por aquí: el 02 no lo reclama en modo auto. Va al 03a desde el 01, sin Aprobar.
@@ -330,7 +363,7 @@ curl -sS -X POST https://n8n.tudominio.com/webhook/mail-approval \
   -d '{"mail_id": "<id de la fila>", "reason": "bucle"}'
 ```
 
-Si es Telegram lo que falla dentro del 03a, la fila queda en `error_aviso`, como cualquier aviso de aprobación. En el resumen, "Retenidos por bucle" son las veces que saltó el freno en las últimas 24 horas, sacadas de `mail_actions`.
+Si es Telegram lo que falla dentro del 03a, la fila queda en `error_aviso`, como cualquier aviso de aprobación. En el resumen, "Retenidos por bucle" (en Problemas) son las veces que saltó el freno en las últimas 24 horas, sacadas de `mail_actions`.
 
 ## Acentos con Gmail
 
@@ -366,7 +399,7 @@ Si el fichero no está montado, el nodo falla al importar `smtplib`. No es silen
 Las pruebas de la lógica no necesitan nada instalado:
 
 ```bash
-node scripts/check.js                     # normalización (acentos), filtros, decisión, botones, issue, JSON de los flujos
+node scripts/check.js                     # normalización (acentos), filtros, decisión, botones, avisos, issue, JSON de los flujos
 python3 scripts/check_mail.py             # el envío por SMTP en el hilo, con un servidor falso
 python3 scripts/build_workflows.py --check  # los JSON están al día con src/ y prompts/
 ```
@@ -391,12 +424,12 @@ python3 test-emails/send.py --resend 01   # reutiliza el Message-ID del último 
 | 01 Consulta clara | Horario, que está en la FAQ. Respuesta sola, con fuente. |
 | 02 Ambigua | Muy corta. A Telegram. |
 | 03 Fuera de la base | SAP. A Telegram, no se inventa un conector. |
-| 04 Bug con detalle | Acuse en el hilo con la referencia (#N), sin enlace a GitHub, e issue en el repo de pruebas, sin el correo del remitente. |
+| 04 Bug con detalle | Acuse en el hilo con la referencia (#N), sin enlace a GitHub, e issue en el repo de pruebas, sin el correo del remitente. A Telegram, «🐞 Bug registrado» con el enlace. |
 | 05 Bug mal escrito | También issue. |
-| 06 Lead | Se guarda el contacto (`lead_registrado`) y llega a Telegram un aviso "Lead nuevo" con la respuesta sugerida, sin botones. No se envía solo: contestas tú. |
-| 07 Urgente | Telegram al momento. |
+| 06 Lead | Se guarda el contacto (`lead_registrado`) y llega a Telegram un aviso «💼 Lead nuevo» con la respuesta sugerida, sin botones. No se envía solo: contestas tú. |
+| 07 Urgente | Acuse en el hilo y, segundos después, «🚨 URGENTE» en Telegram con el texto del correo y si el acuse salió. |
 | 08 Spam | No se contesta. La fila queda como descartado. |
-| 09 Inyección | No promete el reembolso. Llega a Telegram sin borrador y sin Aprobar. |
+| 09 Inyección | No promete el reembolso. Llega a Telegram «🛑 Bloqueado: intenta dar órdenes», sin borrador y sin Aprobar. |
 | 10 Vacaciones | No se contesta. |
 | 11 Quince respuestas citadas | Se queda con la pregunta del horario. |
 | 12 Inglés | Se ve que la base está en español. No se responde solo si el fragmento no contiene las palabras. |

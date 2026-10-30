@@ -1077,7 +1077,7 @@ return { json: { id: row.id, fallo: String(typeof raw === 'string' ? raw : (raw 
             2700,
             400,
             "={{ $('Qué hacer').item.json.chat_id }}",
-            "Responde a este mensaje con el texto corregido. Eso es lo que se enviará.",
+            "✏️ Responde a este mensaje con el texto corregido. Eso es lo que se enviará.",
             "No espera. La respuesta la coge este mismo flujo, como otro update.",
             force_reply=True,
             reply_to="={{ $('Qué hacer').item.json.message_id }}",
@@ -1133,7 +1133,7 @@ return { json: { id: row.id, fallo: String(typeof raw === 'string' ? raw : (raw 
             2020,
             820,
             "={{ $('Leer update').item.json.chat_id }}",
-            "Ese texto no responde a ninguna edición pendiente y no se envía a nadie. Para corregir un borrador, pulsa Editar y contesta al mensaje que te mando.",
+            "ℹ️ Ese texto no responde a ninguna edición pendiente y no se envía a nadie. Para corregir un borrador, pulsa Editar y contesta al mensaje que te mando.",
             on_error="continueRegularOutput",
         ),
         postgres(
@@ -1202,7 +1202,7 @@ return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el fluj
 def flow_actions():
     cfg = "$('Configuración').first().json"
     nodes = [
-        sticky("Notas acciones", 80, 40, "### 04 Acciones\n\nBug: issue en el repo de pruebas (sin datos de contacto) y acuse en el hilo.\nUrgente: Telegram al momento y acuse.\nLead: se guarda el contacto y el borrador, y llega un aviso a Telegram con la respuesta sugerida. No se envía solo.\nSpam: se descarta y se apunta.\n\nSi GitHub falla: `error_accion` y aviso a Telegram."),
+        sticky("Notas acciones", 80, 40, "### 04 Acciones\n\nBug: issue en el repo de pruebas (sin datos de contacto), acuse en el hilo y aviso 🐞 a Telegram con el enlace.\nUrgente: acuse y, segundos después, 🚨 a Telegram diciendo si el acuse salió.\nLead: se guarda el contacto y el borrador, y llega un aviso a Telegram con la respuesta sugerida. No se envía solo.\nSpam: se descarta y se apunta.\n\nSi GitHub falla: `error_accion` y aviso a Telegram."),
         webhook("Webhook acción", "mail-action", 220, 300, "POST /webhook/mail-action."),
         config_node(460, 300, ["support_address", "telegram_chat_id", "github_repo", "github_api_url"]),
         code("Leer ruta", 700, 300, uuid_guard("route: String(body.route || '')").replace("valid }", "valid: valid && ['spam', 'lead', 'urgent', 'bug'].includes(String(body.route)) }")),
@@ -1283,32 +1283,12 @@ RETURNING id""",
             "={{ [$('Texto lead').item.json.id, !$json.error, String(($json.error && ($json.error.message || $json.error.description)) || $json.error || '').slice(0, 400)] }}",
             "Deja rastro del aviso. Si Telegram falló, el resumen diario sigue contando el lead.",
         ),
-        code("Texto urgente", 2240, 620, """
+        code("Acuse urgente", 2240, 620, """
 const row = $json;
-const text = [
-  '<b>Urgente</b>',
-  'De: ' + escapeHtml(row.from_address),
-  'Asunto: ' + escapeHtml(String(row.subject || '').slice(0, 200)),
-  '',
-  escapeHtml(String(row.body_normalized || '').slice(0, 800)),
-].join('\\n');
-return { json: { ...row, telegram_text: text, chat_id: $('Configuración').first().json.telegram_chat_id } };
-""", ("format.js",)),
-        telegram(
-            "Avisar urgente",
-            2460,
-            620,
-            "={{ $json.chat_id }}",
-            "={{ $json.telegram_text }}",
-            "Sale ya. No espera al resumen. Si falla, el acuse sale igual y queda apuntado.",
-        ),
-        code("Acuse urgente", 2700, 620, """
-const row = $('Texto urgente').item.json;
 const config = $('Configuración').first().json;
-const telegramOk = !$json.error;
-return { json: { ...row, telegram_ok: telegramOk, automatic: true, to_address: row.from_address, support_address: config.support_address, outgoing_body: 'Hemos recibido el aviso y lo estamos mirando ahora.', reply_subject: replySubject(row.subject) } };
-""", ("format.js",)),
-        py_code("Enviar acuse urgente", 2920, 620, """
+return { json: { ...row, automatic: true, to_address: row.from_address, support_address: config.support_address, outgoing_body: 'Hemos recibido el aviso y lo estamos mirando ahora.', reply_subject: replySubject(row.subject) } };
+""", ("format.js",), notes="Primero el acuse (segundos) y luego Telegram: así el aviso dice si el cliente ya lo tiene."),
+        py_code("Enviar acuse urgente", 2460, 620, """
 import os
 
 item = _item["json"]
@@ -1325,7 +1305,22 @@ result = send_reply(
     os.environ,
 )
 return {"json": {**item, **result}}
-""", "Acuse en el mismo hilo."),
+""", "Acuse en el mismo hilo. Si falla, el aviso a Telegram sale igual y lo dice."),
+        code("Texto urgente", 2700, 620, """
+const row = $('Acuse urgente').item.json;
+const sent = $json.sent === true;
+const raw = $json.smtp_error || ($json.error && ($json.error.message || $json.error.description)) || $json.error || '';
+const ackError = sent ? '' : String((typeof raw === 'string' ? raw : JSON.stringify(raw)) || 'el nodo Enviar acuse urgente (Python) no se ejecutó').slice(0, 400);
+return { json: { ...row, ack_sent: sent, ack_error: ackError, reply_message_id: $json.reply_message_id || '', telegram_text: urgentMessage(row, { sent, error: ackError }), chat_id: $('Configuración').first().json.telegram_chat_id } };
+""", ("format.js",), notes="🚨 URGENTE, el texto del correo y si salió el acuse."),
+        telegram(
+            "Avisar urgente",
+            2920,
+            620,
+            "={{ $json.chat_id }}",
+            "={{ $json.telegram_text }}",
+            "Sale ya, tras el acuse. No espera al resumen. Si falla, queda apuntado.",
+        ),
         postgres(
             "Cerrar urgente",
             3140,
@@ -1348,7 +1343,7 @@ return {"json": {**item, **result}}
   RETURNING id
 )
 SELECT (SELECT id::text FROM upd) AS id""",
-            "={{ [$('Acuse urgente').item.json.id, $('Acuse urgente').item.json.outgoing_body, $json.sent === true, $json.reply_message_id || '', $('Acuse urgente').item.json.telegram_ok, String($json.smtp_error || ($json.error && $json.error.message) || $json.error || '').slice(0, 400)] }}",
+            "={{ [$('Texto urgente').item.json.id, $('Texto urgente').item.json.outgoing_body, $('Texto urgente').item.json.ack_sent, $('Texto urgente').item.json.reply_message_id, !$json.error, $('Texto urgente').item.json.ack_error] }}",
         ),
         code("Issue", 2240, 820, """
 const repo = $('Configuración').first().json.github_repo;
@@ -1416,6 +1411,24 @@ return {"json": {**item, **result}}
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$('Acuse bug').item.json.id, $('Acuse bug').item.json.issue_number, $('Acuse bug').item.json.issue_url, $('Acuse bug').item.json.outgoing_body, $json.sent === true, $json.reply_message_id || '', String($json.smtp_error || ($json.error && $json.error.message) || $json.error || '').slice(0, 400)] }}",
         ),
+        code("Texto bug", 3360, 820, """
+const row = $('Acuse bug').item.json;
+const result = $('Enviar acuse bug').item.json;
+const sent = result.sent === true;
+const raw = result.smtp_error || (result.error && (result.error.message || result.error.description)) || result.error || '';
+const ackError = sent ? '' : String((typeof raw === 'string' ? raw : JSON.stringify(raw)) || 'el nodo Enviar acuse bug (Python) no se ejecutó').slice(0, 400);
+const title = row.payload && row.payload.title ? row.payload.title : '';
+return { json: { id: row.id, chat_id: $('Configuración').first().json.telegram_chat_id, telegram_text: bugMessage({ ...row, issue_title: title }, { sent, error: ackError }) } };
+""", ("format.js",), notes="Número y enlace de la issue (aviso interno), el título ya tapado y si salió el acuse."),
+        telegram(
+            "Avisar bug",
+            3580,
+            820,
+            "={{ $json.chat_id }}",
+            "={{ $json.telegram_text }}",
+            "Después de Cerrar bug: la issue y la fila ya están. Si Telegram falla, no cambia nada.",
+            on_error="continueRegularOutput",
+        ),
         code("Fallo issue", 2700, 1020, """
 const row = $('Issue').item.json;
 const config = $('Configuración').first().json;
@@ -1462,13 +1475,13 @@ SELECT (SELECT id::text FROM upd) AS id""",
     link(c, "Avisar lead", "Anotar aviso lead", 0)
     link(c, "Avisar lead", "Anotar aviso lead", 1)
     link(c, "¿Lead?", "¿Urgente?", 1)
-    link(c, "¿Urgente?", "Texto urgente", 0)
-    link(c, "Texto urgente", "Avisar urgente")
-    link(c, "Avisar urgente", "Acuse urgente", 0)
-    link(c, "Avisar urgente", "Acuse urgente", 1)
+    link(c, "¿Urgente?", "Acuse urgente", 0)
     link(c, "Acuse urgente", "Enviar acuse urgente")
-    link(c, "Enviar acuse urgente", "Cerrar urgente", 0)
-    link(c, "Enviar acuse urgente", "Cerrar urgente", 1)
+    link(c, "Enviar acuse urgente", "Texto urgente", 0)
+    link(c, "Enviar acuse urgente", "Texto urgente", 1)
+    link(c, "Texto urgente", "Avisar urgente")
+    link(c, "Avisar urgente", "Cerrar urgente", 0)
+    link(c, "Avisar urgente", "Cerrar urgente", 1)
     link(c, "¿Urgente?", "Issue", 1)
     link(c, "Issue", "Crear issue")
     link(c, "Crear issue", "Acuse bug", 0)
@@ -1476,6 +1489,8 @@ SELECT (SELECT id::text FROM upd) AS id""",
     link(c, "Acuse bug", "Enviar acuse bug")
     link(c, "Enviar acuse bug", "Cerrar bug", 0)
     link(c, "Enviar acuse bug", "Cerrar bug", 1)
+    link(c, "Cerrar bug", "Texto bug")
+    link(c, "Texto bug", "Avisar bug")
     link(c, "Fallo issue", "Marcar error acción")
     link(c, "Marcar error acción", "Avisar fallo")
     return pack("04 - Acciones", nodes, c)

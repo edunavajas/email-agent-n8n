@@ -112,7 +112,7 @@ Pregunta de control que hice: "integración con SAP". El mejor fragmento fue una
 
 ## 6. Telegram: aprobar, rechazar, editar
 
-**HACES:** manda el 02 y el 03. En el móvil tienen que verse remitente, asunto, categoría, confianza, borrador y fuentes. Tres botones: Aprobar, Rechazar, Editar.
+**HACES:** manda el 02 y el 03. En el móvil llega «📝 Borrador para aprobar»: remitente, asunto, categoría y confianza, por qué, el borrador en una cita y las fuentes. Tres botones: Aprobar, Rechazar, Editar.
 
 - Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo.
 - Rechazar no envía. La fila pasa a `rechazado`.
@@ -142,14 +142,14 @@ No reinicies un n8n de otro proyecto que viva en la misma máquina. Si reinicias
 
 Hazlos en este orden, que es el de la historia:
 
-1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva la referencia (#N), sin enlace a GitHub, y va en el hilo.
-2. **07** urgente. El Telegram del equipo sale antes del resumen. No esperes al día siguiente para enseñarlo.
+1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva la referencia (#N), sin enlace a GitHub, y va en el hilo. En el móvil, «🐞 Bug registrado» con el número y el enlace de la issue (ese sí: es para ti).
+2. **07** urgente. Primero sale el acuse al cliente y, segundos después, «🚨 URGENTE» en el móvil, con el texto del correo y «📨 Ya le hemos mandado un acuse automático.». No espera al resumen. No esperes al día siguiente para enseñarlo.
 3. **08** spam. No hay respuesta. La fila está, estado `descartado`.
-4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
+4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega «🛑 Bloqueado: intenta dar órdenes», sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
 5. **10** vacaciones. No sale correo. Estado `ignorado_autorespuesta`.
 6. **11** el hilo de quince respuestas. Enseña el cuerpo ya limpio: solo la pregunta del horario. `node scripts/check.js` lo comprueba; el cuerpo limpio queda por debajo de 500 caracteres y no contiene "respuesta citada número 15".
 7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila. Con Gmail el reenvío puede no llegar (deduplica por Message-ID): entonces, `POST /webhook/mail-ingest` con el mismo `message_id`.
-8. **Freno anti-bucles.** Manda otra vez el **01**, con Message-ID nuevo (`send.py --only 01`), antes de que pase una hora. No sale solo: llega a Telegram con el borrador, los tres botones y «Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora». Aprobar lo envía, en el hilo. Todos los correos de prueba salen del mismo buzón cliente: cualquier segunda respuesta automática dentro de esa hora hace lo mismo. No es un fallo.
+8. **Freno anti-bucles.** Manda otra vez el **01**, con Message-ID nuevo (`send.py --only 01`), antes de que pase una hora. No sale solo: llega a Telegram con el borrador, los tres botones y «🔁 Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora». Aprobar lo envía, en el hilo. Todos los correos de prueba salen del mismo buzón cliente: cualquier segunda respuesta automática dentro de esa hora hace lo mismo. No es un fallo.
 
 **Issue de GitHub:** el nodo está en el flujo 04. No lo he disparado. No he creado una issue de prueba para no dejar basura antes de la toma. El repo de destino lo creas tú, vacío, delante de cámara o justo antes.
 
@@ -161,7 +161,7 @@ Hazlos en este orden, que es el de la historia:
 
 **HACES:** flujo 05, botón "Resumen ahora". No esperes a las 06:00 UTC.
 
-**EN PANTALLA:** un mensaje corto. Recibidos, respondidos solos, aprobados, rechazados, leads, issues, spam, urgentes, esperando, vencidas, borrados. Números, no un listado de cuerpos.
+**EN PANTALLA:** «📊 Resumen de ayer», corto, en cuatro bloques: Contestado, Pendiente de ti, Descartado y Problemas. Las líneas a 0 no salen, salvo «Esperando aprobación» y «Con error». La última línea dice si te toca algo: «✅ Nada pendiente de ti.» o «👉 Te toca: 2 por aprobar, 1 lead.». Números, no un listado de cuerpos.
 
 **TARDA:** la consulta, con la tabla vacía, es instantánea. No la he mandado a Telegram.
 

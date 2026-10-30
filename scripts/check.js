@@ -6,7 +6,7 @@ const path = require('path');
 const { normalizeEmail, repairMojibake, decodeUtf8Bytes } = require('../src/normalize');
 const { inspectMail, isValidAddress } = require('../src/security');
 const { decide, extractJson, validateModelOutput } = require('../src/decide');
-const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject } = require('../src/format');
+const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject, urgentMessage, bugMessage, MESSAGE_MAX } = require('../src/format');
 const { buildUserBlock } = require('../src/prompt');
 const { parseUpdate, callbackOutcome } = require('../src/telegram');
 const { issuePayload, redactPersonalData } = require('../src/issue');
@@ -329,18 +329,19 @@ assert.ok(!approvalMessage(loopRow).includes('freno anti-bucles'), 'una aprobaci
 
 // --- Telegram: mensaje de aprobación de un correo bloqueado ---
 const blockedMessage = approvalMessage({ from_address: 'atacante@externo.example', subject: 'Pedido', category: 'revision', confidence: 0.1, draft_reply: '', injection: true, sources: [], reasoning: 'El correo intenta dar instrucciones al sistema.' });
-assert.ok(blockedMessage.includes('sin borrador: bloqueado'));
-assert.ok(blockedMessage.includes('No hay botón Aprobar'));
+assert.ok(blockedMessage.startsWith('🛑 <b>Bloqueado: intenta dar órdenes</b>'), blockedMessage);
+assert.ok(blockedMessage.includes('Sin borrador y sin botón Aprobar'));
+assert.ok(!blockedMessage.includes('<b>Borrador</b>'), 'bloqueado: sin bloque de borrador');
 assert.ok(!failureMessage('x', { id: 'r1', subject: '<b>' }, 'e').includes('<b>&'));
 
 // --- Telegram: aviso de lead ---
 const lead = leadMessage({ from_address: 'marta@empresa.example', from_name: 'Marta <b>', subject: 'Presupuesto & demo', reasoning: 'Pide una demo.', draft_reply: 'Hola, ' + 'x'.repeat(2000) });
-assert.ok(lead.startsWith('<b>Lead nuevo</b>'));
+assert.ok(lead.startsWith('💼 <b>Lead nuevo</b>'), lead);
 assert.ok(lead.includes('Respuesta sugerida (no enviada)'));
 assert.ok(lead.includes('Marta &lt;b&gt;') && lead.includes('Presupuesto &amp; demo'));
 assert.ok(!lead.includes('<b>Marta'));
 assert.ok(lead.endsWith('No se ha contestado: escríbele tú.'));
-assert.ok(lead.length < 1600, String(lead.length));
+assert.ok(lead.length <= 3600, String(lead.length));
 assert.ok(leadMessage({ from_address: 'a@b.example' }).includes('(sin borrador)'));
 
 // --- Issue de GitHub: sin datos de contacto ---
@@ -517,5 +518,76 @@ const viaNode = new Function('$json', 'require', normalizeCode)(gmailRaw, requir
 assert.strictEqual(viaNode.body, gmail.body, 'el 01 repara');
 const noBuffer = new Function('$json', 'require', 'Buffer', normalizeCode)(gmailRaw, require, undefined).json; // eslint-disable-line no-new-func
 assert.strictEqual(noBuffer.body, gmail.body, 'sin Buffer, igual');
+
+// --- Avisos de Telegram: emoji, título en negrita, escape y 4096 ---
+const tagsBalanced = (html) => ['b', 'i', 'code', 'blockquote', 'a'].every((tag) => (html.match(new RegExp('<' + tag + '[ >]', 'g')) || []).length === (html.match(new RegExp('</' + tag + '>', 'g')) || []).length);
+const nasty = '<script>alert(1)</script> & <b>negrita</b> ';
+const approvalRow = { from_address: 'ana@cliente.example', from_name: 'Ana Ruiz', subject: 'Horario', category: 'consulta_frecuente', confidence: 0.62, draft_reply: 'De 9 a 18.', reasoning: 'Está en la FAQ.', sources: faq };
+const plainApproval = approvalMessage(approvalRow);
+assert.ok(plainApproval.startsWith('📝 <b>Borrador para aprobar</b>\nDe: Ana Ruiz &lt;ana@cliente.example&gt;\nAsunto: Horario\nCategoría: consulta frecuente · confianza 62 %'), plainApproval);
+assert.ok(plainApproval.includes('Por qué: Está en la FAQ.') && plainApproval.includes('<b>Borrador</b>\n<blockquote>De 9 a 18.</blockquote>') && plainApproval.includes('<b>Fuentes</b>\n• FAQ de soporte'), plainApproval);
+assert.ok(approvalMessage({ ...approvalRow, sensitive: true }).includes('\n⚠️ Tema sensible: '), 'sensible con aviso');
+assert.ok(approvalMessage({ ...approvalRow, loop_hold: true }).includes('\n🔁 Retenido por el freno anti-bucles: '), 'bucle con aviso');
+assert.ok(approvalMessage({ ...approvalRow, draft_reply: '' }).includes('(vacío: escribe tú la respuesta con Editar)'));
+assert.ok(approvalMessage({ ...approvalRow, injection: true, draft_reply: '', reasoning: 'El borrador prometía una devolución que no está en la base de conocimiento.' }).startsWith('🛑 <b>Bloqueado: el borrador prometía dinero</b>'));
+assert.ok(approvalMessage({ ...approvalRow, injection: true, draft_reply: '', reasoning: 'El borrador repetía instrucciones internas.' }).startsWith('🛑 <b>Bloqueado: el borrador repetía instrucciones internas</b>'));
+const hugeApproval = approvalMessage({ ...approvalRow, from_name: nasty, subject: nasty.repeat(20), reasoning: nasty.repeat(40), draft_reply: nasty.repeat(400), sources: [{ title: nasty.repeat(20), canonical_url: 'https://docs.example.com/' + 'x'.repeat(900) }, faq[0], faq[0]] });
+assert.ok(hugeApproval.length <= MESSAGE_MAX, String(hugeApproval.length));
+assert.ok(!hugeApproval.includes('<script>') && !hugeApproval.includes('<b>negrita'), 'todo lo del correo va escapado');
+assert.ok(hugeApproval.includes('Recortado para Telegram. El correo sale entero.') && hugeApproval.includes('<b>Fuentes</b>'), 'se recorta el borrador, no las fuentes');
+assert.ok(tagsBalanced(hugeApproval), 'el recorte no deja etiquetas abiertas');
+assert.ok(!/&(amp|lt|gt)?$/.test(hugeApproval.split('</blockquote>')[0].replace(' […]', '')), 'el recorte no parte una entidad');
+const emojiDraft = approvalMessage({ ...approvalRow, draft_reply: '👍'.repeat(3000) });
+assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(emojiDraft), 'el recorte no deja medio emoji');
+
+const urgentRow = { from_address: 'luis@cliente.example', from_name: 'Luis Pérez', subject: 'El panel de producción está caído', body_normalized: 'El panel de producción está caído desde las 9:40. ¿Cuál es el estado?' };
+const urgentSent = urgentMessage(urgentRow, { sent: true });
+assert.strictEqual(urgentSent, '🚨 <b>URGENTE</b>\nDe: Luis Pérez &lt;luis@cliente.example&gt;\nAsunto: El panel de producción está caído\n\n<blockquote>El panel de producción está caído desde las 9:40. ¿Cuál es el estado?</blockquote>\n\n📨 Ya le hemos mandado un acuse automático.', urgentSent);
+const urgentFailed = urgentMessage({ ...urgentRow, body_normalized: nasty.repeat(800) }, { sent: false, error: '535 <auth> failed' });
+assert.ok(urgentFailed.endsWith('⚠️ El acuse automático no salió: 535 &lt;auth&gt; failed. Escríbele tú.'), urgentFailed.slice(-200));
+assert.ok(urgentFailed.includes('Recortado. El correo entero está en el buzón.') && urgentFailed.length <= MESSAGE_MAX && tagsBalanced(urgentFailed));
+assert.ok(!urgentMessage(urgentRow).includes('acuse'), 'sin dato del acuse, no lo menciona');
+
+const hugeLead = leadMessage({ from_address: 'marta@empresa.example', subject: 'Demo', reasoning: 'Pide una demo.', draft_reply: nasty.repeat(800) });
+assert.ok(hugeLead.endsWith('\n\nNo se ha contestado: escríbele tú.') && hugeLead.length <= MESSAGE_MAX && tagsBalanced(hugeLead), 'el pie del lead nunca se recorta');
+assert.ok(hugeLead.includes('Recortada para Telegram.'));
+
+const bugRow = { from_address: 'luis@cliente.example', from_name: 'Luis Pérez', issue_number: 42, issue_url: 'https://github.com/tu-usuario/email-agent-sandbox/issues/42', issue_title: '[soporte] No puedo exportar <PDF>', body_normalized: 'texto del cliente que no va al aviso' };
+const bugSent = bugMessage(bugRow, { sent: true });
+assert.strictEqual(bugSent, '🐞 <b>Bug registrado</b>\nDe: Luis Pérez &lt;luis@cliente.example&gt;\nIssue: <a href="https://github.com/tu-usuario/email-agent-sandbox/issues/42">#42</a>\nTítulo: [soporte] No puedo exportar &lt;PDF&gt;\n\n📨 Acuse enviado al cliente con la referencia #42.', bugSent);
+assert.ok(bugMessage(bugRow, { sent: false, error: 'SMTP caído' }).endsWith('⚠️ El acuse automático no salió: SMTP caído. Escríbele tú con la referencia #42.'));
+assert.ok(!bugMessage({ ...bugRow, issue_url: 'javascript:alert(1)' }).includes('<a '), 'solo enlaza https');
+assert.ok(!bugMessage({ ...bugRow, issue_url: 'https://x.example/"onclick="' }).includes('<a '), 'una URL con comillas no entra en el href');
+assert.ok(!bugSent.includes('texto del cliente'), 'el aviso de bug no copia el cuerpo');
+
+const failed = failureMessage('no se pudo crear la issue', { id: 'r1', from_address: 'a@b.example', subject: '<b>', hint: 'Mira el token.' }, 'HTTP 401 <x>');
+assert.strictEqual(failed, '⚠️ <b>Fallo: no se pudo crear la issue</b>\nDe: a@b.example\nAsunto: &lt;b&gt;\nFila: <code>r1</code>\nError: <code>HTTP 401 &lt;x&gt;</code>\n\n<b>Qué hacer:</b> Mira el token.', failed);
+
+const quiet = summaryMessage({ received: 3, auto_replied: 3 });
+assert.strictEqual(quiet, '📊 <b>Resumen de ayer</b>\nRecibidos: 3 (últimas 24 h)\n\n<b>Contestado</b>\nSolos: 3\n\n<b>Pendiente de ti</b>\nEsperando aprobación: 0\n\n<b>Problemas</b>\nCon error (míralos): 0\n\n✅ Nada pendiente de ti.', quiet);
+const busy = summaryMessage({ received: 12, auto_replied: 1, approved: 1, rejected: 1, leads: 1, issues: 1, spam: 1, urgent: 1, ignored: 2, held: 1, waiting: 2, expired: 1, errors: 1, stuck: 2, purged: 4 });
+for (const line of ['<b>Contestado</b>', '<b>Pendiente de ti</b>', '<b>Descartado</b>', '<b>Problemas</b>', 'Leads por contestar: 1', 'Spam: 1', 'Retenidos por bucle: 1', 'Borrados por retención: 4']) assert.ok(busy.includes(line), line + '\n' + busy);
+assert.ok(busy.endsWith('👉 Te toca: 2 por aprobar, 1 lead, 1 con error, 2 atascados, 1 vencida.'), busy);
+assert.ok(!summaryMessage({ received: 0 }).includes('Spam'), 'las líneas a 0 no salen');
+
+// --- 04: urgente con acuse primero y aviso de bug tras la issue ---
+const actionsFlow = '04-acciones.json';
+assert.deepStrictEqual(targets(actionsFlow, '¿Urgente?', 0), ['Acuse urgente']);
+assert.deepStrictEqual(targets(actionsFlow, 'Acuse urgente'), ['Enviar acuse urgente']);
+assert.deepStrictEqual([targets(actionsFlow, 'Enviar acuse urgente', 0), targets(actionsFlow, 'Enviar acuse urgente', 1)], [['Texto urgente'], ['Texto urgente']], 'si el acuse falla, el urgente sale igual');
+assert.deepStrictEqual(targets(actionsFlow, 'Texto urgente'), ['Avisar urgente']);
+assert.deepStrictEqual([targets(actionsFlow, 'Avisar urgente', 0), targets(actionsFlow, 'Avisar urgente', 1)], [['Cerrar urgente'], ['Cerrar urgente']]);
+const urgentOk = runNode(actionsFlow, 'Texto urgente', { sent: true, reply_message_id: '<r@tudominio.com>' }, { 'Acuse urgente': { id: 'u1', ...urgentRow, outgoing_body: 'Hemos recibido el aviso.' }, 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(urgentOk.telegram_text === urgentSent && urgentOk.ack_sent === true && urgentOk.reply_message_id === '<r@tudominio.com>');
+const urgentNoAck = runNode(actionsFlow, 'Texto urgente', { to_address: 'luis@cliente.example' }, { 'Acuse urgente': { id: 'u1', ...urgentRow }, 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(urgentNoAck.ack_sent === false && urgentNoAck.telegram_text.includes('⚠️ El acuse automático no salió: el nodo Enviar acuse urgente (Python) no se ejecutó.'), urgentNoAck.telegram_text);
+assert.ok(nodeOf(actionsFlow, 'Cerrar urgente').parameters.options.queryReplacement.includes("$('Texto urgente').item.json.ack_sent"));
+assert.deepStrictEqual(targets(actionsFlow, 'Cerrar bug'), ['Texto bug']);
+assert.deepStrictEqual(targets(actionsFlow, 'Texto bug'), ['Avisar bug']);
+assert.strictEqual(nodeOf(actionsFlow, 'Avisar bug').onError, 'continueRegularOutput');
+assert.deepStrictEqual(targets(actionsFlow, 'Marcar error acción'), ['Avisar fallo'], 'el aviso de fallo de issue se mantiene');
+const bugText = runNode(actionsFlow, 'Texto bug', { id: 'b1' }, { 'Acuse bug': { id: 'b1', ...bugRow, issue_title: undefined, payload: { title: '[soporte] No puedo exportar <PDF>' } }, 'Enviar acuse bug': { sent: true }, 'Configuración': { telegram_chat_id: '111' } });
+assert.strictEqual(bugText.telegram_text, bugSent);
+assert.ok(runNode(actionsFlow, 'Texto lead', {}, { 'Reclamar': { id: 'l1', from_address: 'marta@empresa.example', subject: 'Demo', draft_reply: 'Hola' }, 'Configuración': { telegram_chat_id: '111' } }).telegram_text.startsWith('💼 <b>Lead nuevo</b>'));
 
 console.log('check ok');
