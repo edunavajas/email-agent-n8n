@@ -55,7 +55,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
    Crea `mail_messages` y `mail_actions`. No toca `knowledge_documents` ni `knowledge_chunks`.
 
 2. Prepara el contenedor de **task runners** para el envío por SMTP (ver [Hilo del correo](#hilo-del-correo)). En Coolify, en el servicio de n8n:
-   - Añade al servicio `task-runners` un fichero montado en `/etc/n8n-task-runners.json` con el contenido de `runners/n8n-task-runners.json`. Tiene que poder leerlo el usuario 1000 (permisos 644).
+   - Añade al servicio `task-runners` un fichero montado en `/etc/n8n-task-runners.json` con el contenido de `runners/n8n-task-runners.json`. Tiene que poder leerlo el usuario 1000: Coolify lo crea con permisos 755 y vale.
    - Añade al mismo servicio las variables `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USER` y `SMTP_PASSWORD` del buzón del agente. Con Gmail: `smtp.gmail.com`, `465`, `ssl`, y usuario y contraseña de aplicación iguales a los de la credencial IMAP. Con otro buzón, ver [Otro buzón](#otro-buzón-hostinger-business-email-o-el-de-vuestra-empresa).
    - Reinicia el servicio. El contenedor de n8n no cambia.
 
@@ -73,7 +73,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
        - SMTP_PASSWORD=${SMTP_PASSWORD}
      volumes:
        - type: bind
-         source: ./n8n-task-runners.json
+         source: ./etc/n8n-task-runners.json
          target: /etc/n8n-task-runners.json
          read_only: true
          content: |
@@ -448,7 +448,7 @@ En la prueba real no hubo segundo buzón con contraseña de aplicación, así qu
 |---|---|
 | 01 Consulta clara | Horario, que está en la FAQ. Respuesta sola, con fuente. |
 | 02 Ambigua | Muy corta. A Telegram. |
-| 03 Fuera de la base | SAP. A Telegram, no se inventa un conector. |
+| 03 Fuera de la base | SAP. A Telegram, no se inventa un conector. En la prueba real el modelo lo tomó como lead (0,85, «interés comercial»): «💼 Lead nuevo» con una respuesta sugerida que no promete el conector. Las dos rutas son seguras: ninguna contesta sola. |
 | 04 Bug con detalle | Acuse en el hilo con la referencia (#N), sin enlace a GitHub, e issue en el repo de pruebas, sin el correo del remitente. A Telegram, «🐞 Bug registrado» con el enlace. |
 | 05 Bug mal escrito | También issue. |
 | 06 Lead | Se guarda el contacto (`lead_registrado`) y llega a Telegram un aviso «💼 Lead nuevo» con la respuesta sugerida, sin botones. No se envía solo: contestas tú. |
