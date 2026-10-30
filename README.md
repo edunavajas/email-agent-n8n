@@ -28,9 +28,9 @@ Correo IMAP
 | Fichero | Qué hace | Disparo |
 |---|---|---|
 | `workflows/01-ingesta.json` | Limpia el correo, no lo procesa dos veces, consulta `/webhook/rag-search` y decide la ruta. | IMAP. También `POST /webhook/mail-ingest` para pruebas. |
-| `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. Si salta el freno anti-bucles, pasa el correo al 03a. | `POST /webhook/mail-reply` |
+| `workflows/02-respuesta.json` | Envía por SMTP en el mismo hilo (`In-Reply-To`, `References`) y marca la fila. Si salta el freno anti-bucles, pasa el correo al 03a. Si se aprobó con un botón, marca ese mensaje como enviado (o fallido). | `POST /webhook/mail-reply` |
 | `workflows/03a-aprobacion.json` | Manda el borrador a Telegram y guarda el `message_id`. Se acaba. | `POST /webhook/mail-approval`, desde el 01 o el 02 |
-| `workflows/03b-botones.json` | Recibe el botón (solo del chat del dueño), busca la fila y envía, descarta o pide el texto corregido. | Telegram |
+| `workflows/03b-botones.json` | Recibe el botón (solo del chat del dueño), busca la fila y envía, descarta o pide el texto corregido. Al decidir, el mensaje se queda sin botones y con lo que pasó. | Telegram |
 | `workflows/04-acciones.json` | Issue de GitHub (y aviso del bug a Telegram), aviso urgente, lead (se guarda y avisa por Telegram) o descarte. | `POST /webhook/mail-action` |
 | `workflows/05-resumen.json` | Vence aprobaciones, borra lo viejo y manda el resumen. | Cada día a las 06:00 UTC, o el botón "Resumen ahora". |
 
@@ -194,7 +194,7 @@ Se cambia en los mismos tres sitios que con Gmail: credencial IMAP, variables `S
 | RAG API Key | Header Auth, cabecera `X-RAG-API-Key` | La misma clave que inventaste en el episodio 2. | "Buscar RAG". |
 | Mail API Key | Header Auth, cabecera `X-MAIL-API-Key` | Te la inventas, igual que la del RAG. La misma en los webhooks y en quien los llama. | Webhooks internos y los HTTP que los disparan. |
 | LLM API | Header Auth, cabecera `Authorization`, valor `Bearer sk-...` | Consola de DeepSeek (o el proveedor que elijas). | "Clasificar". |
-| Telegram | Telegram API | BotFather: `/newbot`. El chat id sale al escribirle al bot y abrir `getUpdates`. | Los seis: botones (03a, 03b), urgentes, bugs y leads (04), resumen (05) y avisos de fallo (01, 02, 03b, 04). |
+| Telegram | Telegram API | BotFather: `/newbot`. El chat id sale al escribirle al bot y abrir `getUpdates`. | Los seis: botones (03a, 03b, y el 02 marca el mensaje del botón al enviar), urgentes, bugs y leads (04), resumen (05) y avisos de fallo (01, 02, 03b, 04). |
 | GitHub Issues | Header Auth, cabecera `Authorization`, valor `Bearer github_pat_...` | GitHub → Settings → Developer settings → Fine-grained token. Solo permiso **Issues** sobre el repo de pruebas. | "Crear issue". |
 | PostgreSQL | Postgres | La del episodio 2. Host `knowledge-db`, puerto 5432, base `knowledge`. | Todos los nodos de base de datos. |
 
@@ -263,7 +263,7 @@ Todos tienen la misma forma: emoji y título en negrita, los campos uno por lín
 | ⚠️ **Fallo: …** | 01, 02, 03b, 04 | Qué falló, la fila, el error y qué hacer. |
 | 📊 **Resumen de ayer** | 05 | Contestado / Pendiente de ti / Descartado / Problemas. Las líneas a 0 no salen, salvo «Esperando aprobación» y «Con error». Al final, «✅ Nada pendiente de ti.» o «👉 Te toca: …». |
 
-Un borrador para aprobar, con datos inventados (en el móvil, las negritas y la cita se ven con formato):
+Un borrador ya aprobado, con datos inventados (en el móvil, las negritas y la cita se ven con formato):
 
 ```
 📝 Borrador para aprobar
@@ -280,6 +280,8 @@ Borrador
 Fuentes
 • FAQ de soporte — Taller Norte (2026-10-17)
   https://docs.example.com/doc/faq-soporte
+
+✅ Aprobado y enviado · 10:03
 ```
 
 ## Botones de Telegram
@@ -288,6 +290,22 @@ Fuentes
 - No uses el campo *Restrict to Chat IDs* del trigger de Telegram: en n8n 2.10.2 mira `message.chat.id`, que un botón no trae, y descartaría todos los botones. El filtro está en el nodo "Leer update".
 - Aprobar dos veces, aprobar después de Rechazar o con la fila ya enviada no manda nada: el botón contesta con un aviso ("Ya se respondió", "Ya estaba rechazado", "Venció el plazo").
 - Editar manda un mensaje que hay que **responder** (Telegram abre la respuesta solo). Ese texto es el que sale. Un texto suelto, que no responde a ese mensaje, no se envía a nadie.
+- En cuanto decides, el mensaje del borrador **pierde los botones** y gana una línea al final con lo que pasó y la hora de Madrid:
+
+  | Cuándo | Línea |
+  |---|---|
+  | Pulsas Aprobar (03b) | «⏳ Aprobado. Enviando… · 10:03» |
+  | Sale el correo (02) | «✅ Aprobado y enviado · 10:03» |
+  | Pulsas Rechazar | «❌ Rechazado · 10:05» |
+  | Pulsas Editar (cuando ya ha salido la petición de texto) | «✏️ Editando: responde al mensaje que te acabo de mandar» |
+  | Sale tu texto (02) | «✅ Enviado con tu texto · 10:07» |
+  | Falla el SMTP (02) | «⚠️ Falló el envío: … · 10:03. Tienes Reintentar en el aviso de abajo.» |
+  | El 03b no llega al 02 | «⚠️ Falló el envío: el flujo 02 no recibió la petición · 10:03. Pulsa Aprobar otra vez cuando esté.» Los botones vuelven. |
+
+  El texto se rehace desde la fila con `currentMessage` (`src/format.js`): sale igual que el que mandó el 03a, con su formato. Si pulsaste en el aviso de fallo del 02 (Reintentar), se rehace ese aviso.
+- Un botón viejo (ya respondido, rechazado, vencido, retenido) también deja el mensaje sin botones, con «✅ Ya estaba respondido», «❌ Ya estaba rechazado», «⌛ Venció el plazo»... Un mensaje que ya no tiene fila se rehace con el texto que trae el botón (sin formato). Si la fila sigue en curso (un doble toque rápido), el mensaje no se toca: lo marca la ejecución que lo está enviando.
+- La edición nunca para nada: los nodos que editan van con *On Error: Continue*. Si Telegram la rechaza ("message is not modified", un mensaje borrado o muy viejo), el flujo sigue y el correo sale igual. En el 02 la edición va después de marcar la fila como enviada.
+- Solo edita el 03b después de "Leer update": un botón de otro chat no toca ningún mensaje. Edita con la misma credencial "Telegram" (`editMessageText` con un teclado vacío, que es lo que quita los botones).
 
 ## Si algo falla
 
@@ -296,11 +314,11 @@ Ningún error se queda callado. Cada uno deja la fila en un estado y, si se pued
 | Qué falla | Estado | Aviso |
 |---|---|---|
 | El 01 no consigue llamar al 02, 03a o 04 (flujo sin publicar, `n8n_url` o Mail API Key mal) | `error_interno` | Telegram desde el 01 |
-| El SMTP (o el runner de Python) | `error_envio` | Telegram con Reintentar, Rechazar y Editar |
+| El SMTP (o el runner de Python) | `error_envio` | Telegram con Reintentar, Rechazar y Editar. El mensaje que pulsaste dice «⚠️ Falló el envío» |
 | Telegram no acepta el aviso de aprobación | `error_aviso` | No se puede avisar por Telegram: sale en el resumen |
 | GitHub no crea la issue | `error_accion` | Telegram («⚠️ Fallo: no se pudo crear la issue») |
 | Telegram no acepta el aviso de un lead | el lead sigue en `lead_registrado` | `error_aviso` en `mail_actions`; el lead sale en el resumen |
-| El 03b no consigue llamar al 02 | vuelve a `esperando_aprobacion` | Telegram: pulsa Aprobar otra vez cuando esté |
+| El 03b no consigue llamar al 02 | vuelve a `esperando_aprobacion` | Telegram, y el mensaje del borrador recupera sus botones: pulsa Aprobar otra vez cuando esté |
 | El 02 no consigue llamar al 03a con un correo retenido por el freno anti-bucles | sigue en `retenido_bucle` | Telegram desde el 02, sin botones. El resumen la cuenta como atascada |
 
 El resumen cuenta las filas en error y las que llevan más de una hora a medio camino.

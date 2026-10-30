@@ -6,7 +6,7 @@ const path = require('path');
 const { normalizeEmail, repairMojibake, decodeUtf8Bytes } = require('../src/normalize');
 const { inspectMail, isValidAddress } = require('../src/security');
 const { decide, extractJson, validateModelOutput } = require('../src/decide');
-const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject, urgentMessage, bugMessage, MESSAGE_MAX } = require('../src/format');
+const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject, urgentMessage, bugMessage, sendFailureMessage, currentMessage, resultLine, withResult, madridTime, TELEGRAM_MAX, MESSAGE_MAX } = require('../src/format');
 const { buildUserBlock } = require('../src/prompt');
 const { parseUpdate, callbackOutcome } = require('../src/telegram');
 const { issuePayload, redactPersonalData } = require('../src/issue');
@@ -408,6 +408,13 @@ for (const [file, flow] of Object.entries(flows)) {
     if (item.type === 'n8n-nodes-base.telegram' && item.parameters.operation === 'sendMessage') {
       assert.strictEqual(item.parameters.additionalFields.parse_mode, 'HTML', file + ': ' + item.name + ' en HTML');
     }
+    // Editar un mensaje nunca para el flujo: si Telegram dice que no (mensaje igual, viejo, borrado), se sigue.
+    if (item.type === 'n8n-nodes-base.telegram' && item.parameters.operation === 'editMessageText') {
+      assert.strictEqual(item.parameters.additionalFields.parse_mode, 'HTML', file + ': ' + item.name + ' en HTML');
+      assert.strictEqual(item.onError, 'continueRegularOutput', file + ': ' + item.name + ' no rompe la ejecución');
+      assert.strictEqual(item.parameters.messageType, 'message', file + ': ' + item.name);
+      assert.strictEqual(item.parameters.replyMarkup, 'inlineKeyboard', file + ': ' + item.name + ' manda el teclado (vacío = sin botones)');
+    }
     if (item.type === 'n8n-nodes-base.code' && item.parameters.language === 'pythonNative') {
       assert.ok((flow.connections[item.name].main[1] || []).length > 0, file + ': la salida de error de ' + item.name + ' está conectada');
     }
@@ -569,6 +576,126 @@ const busy = summaryMessage({ received: 12, auto_replied: 1, approved: 1, reject
 for (const line of ['<b>Contestado</b>', '<b>Pendiente de ti</b>', '<b>Descartado</b>', '<b>Problemas</b>', 'Leads por contestar: 1', 'Spam: 1', 'Retenidos por bucle: 1', 'Borrados por retención: 4']) assert.ok(busy.includes(line), line + '\n' + busy);
 assert.ok(busy.endsWith('👉 Te toca: 2 por aprobar, 1 lead, 1 con error, 2 atascados, 1 vencida.'), busy);
 assert.ok(!summaryMessage({ received: 0 }).includes('Spam'), 'las líneas a 0 no salen');
+
+// --- Botones: el mensaje se queda sin botones y con lo que pasó ---
+assert.strictEqual(madridTime(new Date('2026-10-30T09:03:00Z')), '10:03', 'invierno: UTC+1');
+assert.strictEqual(madridTime(new Date('2026-07-01T08:03:00Z')), '10:03', 'verano: UTC+2');
+assert.strictEqual(madridTime(new Date('2026-03-29T00:59:00Z')), '01:59');
+assert.strictEqual(madridTime(new Date('2026-03-29T01:00:00Z')), '03:00', 'cambio de marzo');
+assert.strictEqual(madridTime(new Date('2026-10-25T00:59:00Z')), '02:59');
+assert.strictEqual(madridTime(new Date('2026-10-25T01:00:00Z')), '02:00', 'cambio de octubre');
+assert.strictEqual(madridTime(new Date('2026-12-31T23:30:00Z')), '00:30');
+assert.strictEqual(resultLine('enviado', { when: '10:03' }), '✅ Aprobado y enviado · 10:03');
+assert.strictEqual(resultLine('rechazado', { when: '10:05' }), '❌ Rechazado · 10:05');
+assert.strictEqual(resultLine('editando'), '✏️ Editando: responde al mensaje que te acabo de mandar');
+assert.strictEqual(resultLine('enviado_editado', { when: '10:07' }), '✅ Enviado con tu texto · 10:07');
+assert.strictEqual(resultLine('fallo_envio', { detail: '535 <auth>\nfailed', when: '10:03' }), '⚠️ Falló el envío: 535 &lt;auth&gt; failed · 10:03. Tienes Reintentar en el aviso de abajo.');
+assert.strictEqual(resultLine('fallo_02', { when: '10:03' }), '⚠️ Falló el envío: el flujo 02 no recibió la petición · 10:03. Pulsa Aprobar otra vez cuando esté.');
+const worst = withResult(hugeApproval, resultLine('fallo_envio', { detail: nasty.repeat(100), when: '10:03' }));
+assert.ok(worst.length <= TELEGRAM_MAX && tagsBalanced(worst), String(worst.length));
+
+const outcomeOf = (extra, action = 'approve') => callbackOutcome(row(extra), action);
+assert.deepStrictEqual([outcomeOf({ claimed: 1 }).result, outcomeOf({ claimed: 1 }).timed], ['enviando', true]);
+assert.deepStrictEqual([outcomeOf({ claimed: 1 }, 'reject').result, outcomeOf({ claimed: 1 }, 'reject').timed], ['rechazado', true]);
+assert.deepStrictEqual([outcomeOf({ claimed: 1 }, 'edit').result, outcomeOf({ claimed: 1 }, 'edit').timed], ['editando', false]);
+const staleResults = { respondido_manual: 'ya_respondido', respondido_auto: 'ya_respondido', rechazado: 'ya_rechazado', aprobacion_vencida: 'vencido', retenido_bucle: 'retenido', descartado: 'otro' };
+for (const [status, result] of Object.entries(staleResults)) assert.strictEqual(outcomeOf({ previous_status: status }).result, result, 'botón viejo: ' + status);
+assert.strictEqual(outcomeOf({ expired: true }).result, 'vencido');
+assert.strictEqual(callbackOutcome({ id: null }, 'approve').result, 'sin_fila');
+for (const status of ['aprobado', 'enviando', 'esperando_aprobacion']) assert.strictEqual(outcomeOf({ previous_status: status }).result, '', 'en curso: otra ejecución edita el mensaje (' + status + ')');
+assert.strictEqual(outcomeOf({ injection_flag: true }).result, '', 'bloqueado: Rechazar y Editar siguen valiendo');
+assert.strictEqual(outcomeOf({ claimed: 1 }, 'borrar-todo').result, '');
+assert.strictEqual(parseUpdate({ callback_query: { id: 'q', data: 'approve', from: { id: 111 }, message: { message_id: 50, text: 'Borrador para aprobar', chat: { id: 111 } } } }, owner).message_text, 'Borrador para aprobar');
+
+// El 03b rehace el mismo texto que mandó el 03a y le añade la línea.
+const dbRow = { id: 'r1', from_address: 'ana@cliente.example', from_name: 'Ana Ruiz', subject: 'Horario', category: 'consulta_frecuente', confidence: '0.620', draft_reply: 'De 9 a 18.', reasoning: 'Está en la FAQ.', rag_sources: faq, injection_flag: false, sensitive_flag: false, telegram_chat_id: '111', telegram_message_id: '50', on_approval_message: true, loop_hold: false, last_send_error: null };
+const sent03a = runNode('03a-aprobacion.json', 'Texto Telegram', { ...dbRow, rag_sources: JSON.stringify(faq), loop_hold: false }, { 'Configuración': { telegram_chat_id: '111' } }).telegram_text;
+const tapUpdate = (extra = {}) => ({ ...parseUpdate(tap(111, 111), owner), ...extra });
+const whatToDo = (sqlRow, extra) => runNode('03b-botones.json', 'Qué hacer', sqlRow, { 'Leer update': tapUpdate(extra) });
+const approved = whatToDo({ ...dbRow, previous_status: 'esperando_aprobacion', claimed: 1, expired: false, has_final_reply: false });
+assert.strictEqual(approved.next, 'send');
+assert.strictEqual(approved.edit, true);
+assert.ok(approved.edit_text.startsWith(sent03a + '\n\n'), 'mismo texto que el 03a');
+assert.ok(/\n\n⏳ Aprobado\. Enviando… · \d\d:\d\d$/.test(approved.edit_text), approved.edit_text.slice(-80));
+assert.ok(whatToDo({ ...dbRow, previous_status: 'esperando_aprobacion', claimed: 1 }, { data: 'reject' }).edit_text.match(/\n\n❌ Rechazado · \d\d:\d\d$/));
+assert.ok(whatToDo({ ...dbRow, previous_status: 'esperando_aprobacion', claimed: 1 }, { data: 'edit' }).edit_text.endsWith('\n\n✏️ Editando: responde al mensaje que te acabo de mandar'));
+assert.ok(whatToDo({ ...dbRow, previous_status: 'rechazado', claimed: 0 }).edit_text.endsWith('\n\n❌ Ya estaba rechazado. No se envía nada.'), 'botón viejo: sin botones');
+assert.ok(whatToDo({ ...dbRow, previous_status: 'respondido_manual', claimed: 0 }).edit_text.endsWith('✅ Ya estaba respondido. No se envía otra vez.'));
+assert.ok(whatToDo({ ...dbRow, previous_status: 'esperando_aprobacion', claimed: 0, expired: true }).edit_text.endsWith('⌛ Venció el plazo de aprobación. No se envía nada.'));
+assert.strictEqual(whatToDo({ ...dbRow, previous_status: 'aprobado', claimed: 0 }).edit, false, 'doble toque en curso: no se pisa la línea del 02');
+const orphan = whatToDo({ id: null }, { message_text: 'Correo para revisar <b>x</b>' });
+assert.ok(orphan.edit && orphan.edit_text === 'Correo para revisar &lt;b&gt;x&lt;/b&gt;\n\nℹ️ Este mensaje ya no corresponde a ningún correo.', orphan.edit_text);
+assert.strictEqual(whatToDo({ id: null }, { message_text: '' }).edit, false, 'sin fila ni texto: no se edita');
+// Botón del aviso de fallo del 02 (Reintentar): se rehace ese aviso, no el del 03a.
+const onFailure = whatToDo({ ...dbRow, on_approval_message: false, last_send_error: '535 auth', previous_status: 'error_envio', claimed: 1 });
+assert.ok(onFailure.edit_text.startsWith(sendFailureMessage(dbRow, '535 auth') + '\n\n⏳ Aprobado. Enviando…'), onFailure.edit_text);
+assert.strictEqual(currentMessage({ ...dbRow, on_approval_message: false, last_send_error: null }), sent03a, 'sin error guardado, el del 03a');
+assert.ok(currentMessage({ ...dbRow, loop_hold: true }).includes('🔁 Retenido por el freno anti-bucles'));
+
+// El 02 marca el mensaje al acabar: enviado (o con tu texto) o fallo.
+const claimed02 = { ...dbRow, message_id: 'ep3@cliente.example', final_reply: null, references_header: '', recent: 0 };
+const manual = runNode(replyFlow, 'Preparar envío', claimed02, { 'Leer petición': { mode: 'manual' }, 'Configuración': { support_address: 'soporte@tudominio.com' } });
+assert.strictEqual(manual.telegram_edit, true);
+assert.ok(manual.telegram_sent_text.startsWith(sent03a + '\n\n✅ Aprobado y enviado · ') && /\d\d:\d\d$/.test(manual.telegram_sent_text), manual.telegram_sent_text.slice(-60));
+const manualEdited = runNode(replyFlow, 'Preparar envío', { ...claimed02, final_reply: 'Mi texto' }, { 'Leer petición': { mode: 'manual' }, 'Configuración': { support_address: 'soporte@tudominio.com' } });
+assert.ok(/\n\n✅ Enviado con tu texto · \d\d:\d\d$/.test(manualEdited.telegram_sent_text) && manualEdited.outgoing_body === 'Mi texto');
+const auto = runNode(replyFlow, 'Preparar envío', { ...claimed02, telegram_message_id: null }, { 'Leer petición': { mode: 'auto' }, 'Configuración': { support_address: 'soporte@tudominio.com' } });
+assert.strictEqual(auto.telegram_edit, false, 'auto: no hay mensaje que tocar');
+const smtpFailed = runNode(replyFlow, 'Error de envío', { smtp_error: '535 5.7.8 auth failed' }, { 'Preparar envío': manual, 'Configuración': { telegram_chat_id: '111', approval_hours: 24 } });
+assert.ok(smtpFailed.telegram_failed_text.startsWith(sent03a + '\n\n⚠️ Falló el envío: 535 5.7.8 auth failed · ') && smtpFailed.telegram_failed_text.endsWith('. Tienes Reintentar en el aviso de abajo.'), smtpFailed.telegram_failed_text.slice(-120));
+assert.ok(smtpFailed.text.startsWith('⚠️ <b>Fallo: no se pudo enviar la respuesta</b>') && smtpFailed.text === sendFailureMessage(manual, '535 5.7.8 auth failed'), 'el aviso de fallo es el que el 03b sabe rehacer');
+// El 03b no llegó al 02: la fila vuelve a esperar y el mensaje recupera los botones.
+const undo = runNode('03b-botones.json', 'Texto fallo', { ...dbRow, fallo: 'ECONNREFUSED' }, { 'Configuración': { telegram_chat_id: '111' } });
+assert.ok(undo.restore === true && undo.approve_label === 'Aprobar' && undo.restore_message_id === '50');
+assert.ok(undo.restore_text.startsWith(sent03a + '\n\n⚠️ Falló el envío: el flujo 02 no recibió la petición · ') && undo.restore_text.endsWith('. Pulsa Aprobar otra vez cuando esté.'), undo.restore_text.slice(-120));
+assert.ok(undo.text.startsWith('⚠️ <b>Fallo: el flujo 02 no recibió el envío</b>'), 'el aviso de fallo sigue saliendo');
+assert.strictEqual(runNode('03b-botones.json', 'Texto fallo', { ...dbRow, on_approval_message: false, last_send_error: '535', fallo: 'x' }, { 'Configuración': { telegram_chat_id: '111' } }).approve_label, 'Reintentar');
+assert.strictEqual(runNode('03b-botones.json', 'Texto fallo', { id: null, fallo: 'x' }, { 'Configuración': { telegram_chat_id: '111' } }).restore, false, 'si la fila no volvió a esperar, no hay botones que devolver');
+
+// Cableado: la edición no rompe nada y solo la hace el dueño.
+const callbackFlow = '03b-botones.json';
+const editNodes = (file) => flows[file].nodes.filter((item) => item.parameters.operation === 'editMessageText').map((item) => item.name);
+assert.deepStrictEqual(editNodes(callbackFlow).sort(), ['Devolver botones', 'Quitar botones', 'Quitar botones al editar']);
+assert.deepStrictEqual(editNodes(replyFlow).sort(), ['Telegram: enviado', 'Telegram: falló']);
+assert.deepStrictEqual(nodeOf(callbackFlow, 'Quitar botones').parameters.inlineKeyboard, {}, 'teclado vacío = sin botones');
+assert.deepStrictEqual(nodeOf(callbackFlow, 'Quitar botones al editar').parameters.inlineKeyboard, {});
+assert.deepStrictEqual(nodeOf(callbackFlow, 'Devolver botones').parameters.inlineKeyboard.rows[0].row.buttons.map((button) => button.additionalFields.callback_data), ['approve', 'reject', 'edit']);
+const downstream = (file, start) => {
+  const seen = new Set([start]);
+  const queue = [start];
+  while (queue.length) {
+    for (const branch of (flows[file].connections[queue.shift()] || { main: [] }).main) {
+      for (const edge of branch) if (!seen.has(edge.node)) { seen.add(edge.node); queue.push(edge.node); }
+    }
+  }
+  return seen;
+};
+for (const name of editNodes(callbackFlow)) assert.ok(!downstream(callbackFlow, '¿Ajeno?').has(name), 'un chat ajeno no llega a ' + name);
+assert.ok(downstream(callbackFlow, 'Qué hacer').has('Quitar botones'));
+assert.deepStrictEqual(targets(callbackFlow, 'Responder botón'), ['¿Quitar botones?']);
+assert.deepStrictEqual(targets(callbackFlow, '¿Quitar botones?', 0), ['Quitar botones']);
+assert.deepStrictEqual(targets(callbackFlow, '¿Quitar botones?', 1), ['¿Enviar?'], 'sin edición, sigue igual');
+assert.deepStrictEqual(targets(callbackFlow, 'Quitar botones'), ['¿Enviar?'], 'con edición (aunque falle), sigue igual');
+assert.ok(nodeOf(callbackFlow, '¿Quitar botones?').parameters.conditions.conditions[0].leftValue.includes("next !== 'edit'"), 'Editar quita los botones después de pedir el texto');
+assert.deepStrictEqual(targets(callbackFlow, 'Guardar edición'), ['¿Texto pedido?']);
+assert.deepStrictEqual(targets(callbackFlow, '¿Texto pedido?', 0), ['Quitar botones al editar']);
+assert.deepStrictEqual(targets(callbackFlow, 'Deshacer aprobación'), ['Texto fallo']);
+assert.deepStrictEqual(targets(callbackFlow, 'Texto fallo'), ['¿Devolver botones?']);
+assert.deepStrictEqual(targets(callbackFlow, '¿Devolver botones?', 0), ['Devolver botones']);
+assert.deepStrictEqual(targets(callbackFlow, '¿Devolver botones?', 1), ['Avisar fallo']);
+assert.deepStrictEqual(targets(callbackFlow, 'Devolver botones'), ['Avisar fallo'], 'el aviso de fallo sale igual');
+assert.ok(nodeOf(callbackFlow, 'Resolver botón').parameters.query.includes('AS on_approval_message') && nodeOf(callbackFlow, 'Deshacer aprobación').parameters.query.includes('AS last_send_error'));
+// En el 02 la edición va después de Marcar enviado / Marcar error: el correo no depende de ella.
+const beforeSend = [...downstream(replyFlow, 'Webhook respuesta')].filter((name) => downstream(replyFlow, name).has('Enviar'));
+assert.ok(!beforeSend.some((name) => editNodes(replyFlow).includes(name)), 'ninguna edición antes de Enviar');
+assert.deepStrictEqual(targets(replyFlow, 'Marcar enviado'), ['¿Venía de Telegram?']);
+assert.deepStrictEqual(targets(replyFlow, '¿Venía de Telegram?', 0), ['Telegram: enviado']);
+assert.deepStrictEqual(targets(replyFlow, 'Marcar error'), ['¿Venía de Telegram? (fallo)']);
+assert.deepStrictEqual(targets(replyFlow, '¿Venía de Telegram? (fallo)', 0), ['Telegram: falló']);
+assert.deepStrictEqual(targets(replyFlow, '¿Venía de Telegram? (fallo)', 1), ['Avisar fallo']);
+assert.deepStrictEqual(targets(replyFlow, 'Telegram: falló'), ['Avisar fallo'], 'Reintentar llega aunque la edición falle');
+assert.deepStrictEqual(targets(replyFlow, 'Avisar fallo'), ['Guardar aviso']);
+assert.ok(nodeOf(replyFlow, 'Reclamar').parameters.query.includes('c.telegram_message_id') && nodeOf(replyFlow, 'Reclamar').parameters.query.includes('AS on_approval_message'));
 
 // --- 04: urgente con acuse primero y aviso de bug tras la issue ---
 const actionsFlow = '04-acciones.json';

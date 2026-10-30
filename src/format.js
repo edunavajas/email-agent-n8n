@@ -5,7 +5,9 @@
 // Forma de todos los avisos: emoji y título en negrita, campos "Etiqueta: valor"
 // uno por línea, bloques separados por una línea en blanco.
 
-// Telegram corta en 4096. Los avisos se quedan en 3600: deja margen.
+// Telegram corta en 4096. Los avisos se quedan en 3600 para que quepa la línea
+// de resultado que se añade al pulsar un botón (withResult).
+const TELEGRAM_MAX = 4096;
 const MESSAGE_MAX = 3600;
 
 function escapeHtml(value) {
@@ -108,6 +110,28 @@ function blockedTitle(reasoning) {
   return 'Bloqueado: intenta dar órdenes';
 }
 
+// Fila de mail_messages -> campos de approvalMessage. La usan el 03a al mandar
+// el aviso y el 02/03b al rehacerlo para quitarle los botones: sale igual.
+function approvalFromRow(row) {
+  let sources = row.rag_sources;
+  if (typeof sources === 'string') {
+    try { sources = JSON.parse(sources); } catch { sources = []; }
+  }
+  return {
+    from_address: row.from_address,
+    from_name: row.from_name,
+    subject: row.subject,
+    category: row.category,
+    confidence: row.confidence,
+    draft_reply: row.draft_reply,
+    reasoning: row.reasoning,
+    sources: Array.isArray(sources) ? sources : [],
+    injection: row.injection_flag === true,
+    sensitive: row.sensitive_flag === true,
+    loop_hold: row.loop_hold === true,
+  };
+}
+
 function approvalMessage(row) {
   const blocked = Boolean(row.injection);
   const parts = blocked
@@ -146,6 +170,13 @@ function failureMessage(what, row, error) {
   parts.push(`Error: <code>${escapeHtml(cut(String(error || 'sin detalle'), 500))}</code>`);
   if (row && row.hint) parts.push('', `<b>Qué hacer:</b> ${escapeHtml(cut(String(row.hint), 1200))}`);
   return fit(parts);
+}
+
+const SEND_FAILURE_HINT = 'Queda en error_envio. Reintentar lo manda otra vez (tu texto si lo editaste). Si nadie pulsa, vence como una aprobación.';
+
+// El aviso del 02 cuando el SMTP falla. Lleva Reintentar, Rechazar y Editar.
+function sendFailureMessage(row, error) {
+  return failureMessage('no se pudo enviar la respuesta', { ...row, hint: SEND_FAILURE_HINT }, error);
 }
 
 // Aviso de lead: llega al móvil al momento. Sin botones: no se contesta solo.
@@ -237,6 +268,71 @@ function summaryMessage(counts) {
   return lines.join('\n');
 }
 
+// Hora de Madrid sin depender de ICU: UTC+1, y UTC+2 desde el último domingo
+// de marzo hasta el último de octubre (a la 01:00 UTC, regla de la UE).
+function lastSundayUtc(year, month) {
+  const last = new Date(Date.UTC(year, month + 1, 0));
+  return last.getUTCDate() - last.getUTCDay();
+}
+
+function madridTime(date) {
+  const when = new Date(date === undefined ? Date.now() : date);
+  const year = when.getUTCFullYear();
+  const summerStart = Date.UTC(year, 2, lastSundayUtc(year, 2), 1);
+  const summerEnd = Date.UTC(year, 9, lastSundayUtc(year, 9), 1);
+  const offset = when.getTime() >= summerStart && when.getTime() < summerEnd ? 2 : 1;
+  const local = new Date(when.getTime() + offset * 3600000);
+  return String(local.getUTCHours()).padStart(2, '0') + ':' + String(local.getUTCMinutes()).padStart(2, '0');
+}
+
+// Línea que se añade al mensaje con botones cuando se decide. telegram.js dice
+// qué pasó (la clave); aquí está cómo se lee.
+const RESULTS = {
+  enviando: '⏳ Aprobado. Enviando…',
+  enviado: '✅ Aprobado y enviado',
+  enviado_editado: '✅ Enviado con tu texto',
+  rechazado: '❌ Rechazado',
+  editando: '✏️ Editando: responde al mensaje que te acabo de mandar',
+  fallo_envio: '⚠️ Falló el envío',
+  fallo_02: '⚠️ Falló el envío: el flujo 02 no recibió la petición',
+  ya_respondido: '✅ Ya estaba respondido. No se envía otra vez.',
+  ya_rechazado: '❌ Ya estaba rechazado. No se envía nada.',
+  vencido: '⌛ Venció el plazo de aprobación. No se envía nada.',
+  retenido: '🔁 Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',
+  sin_fila: 'ℹ️ Este mensaje ya no corresponde a ningún correo.',
+  otro: 'ℹ️ Este botón ya no hace nada.',
+};
+const RESULT_TAILS = {
+  fallo_envio: 'Tienes Reintentar en el aviso de abajo.',
+  fallo_02: 'Pulsa Aprobar otra vez cuando esté.',
+};
+
+function resultLine(kind, options = {}) {
+  let line = RESULTS[kind] || RESULTS.otro;
+  if (options.detail) line += ': ' + escapeHtml(cut(String(options.detail).replace(/\s+/g, ' ').trim(), 200));
+  if (options.when) line += ' · ' + options.when;
+  const tail = options.tail || RESULT_TAILS[kind];
+  return tail ? `${line}. ${tail}` : line;
+}
+
+function withResult(base, line) {
+  return cut(`${base}\n\n${line}`, TELEGRAM_MAX);
+}
+
+// Texto que tiene ahora el mensaje con botones de esa fila: el del 03a o, si el
+// 02 mandó después un aviso de fallo (y la fila apunta a él), ese aviso.
+// on_approval_message y last_send_error salen de mail_actions (ver la SQL).
+function currentMessage(row) {
+  if (row.on_approval_message === false && row.last_send_error) return sendFailureMessage(row, row.last_send_error);
+  return approvalMessage(approvalFromRow(row));
+}
+
+// Un botón de un mensaje que ya no tiene fila: se rehace con el texto plano que
+// trae el propio botón (Telegram lo manda sin formato).
+function plainMessage(text) {
+  return escapeHtml(cut(String(text || '').trim(), 3000));
+}
+
 // Asunto del correo que sale. Si el del cliente venía vacío, "Re:" a secas:
 // con "Re: (sin asunto)" Gmail abre otro hilo aunque In-Reply-To y References
 // estén bien. Probado con Gmail real.
@@ -246,4 +342,4 @@ function replySubject(subject) {
   return /^re:/i.test(clean) ? clean : `Re: ${clean}`;
 }
 
-module.exports = { approvalMessage, leadMessage, urgentMessage, bugMessage, summaryMessage, failureMessage, replySubject, formatSources, escapeHtml, cut, MESSAGE_MAX };
+module.exports = { approvalMessage, approvalFromRow, leadMessage, urgentMessage, bugMessage, summaryMessage, failureMessage, sendFailureMessage, currentMessage, plainMessage, resultLine, withResult, madridTime, replySubject, formatSources, escapeHtml, cut, TELEGRAM_MAX, MESSAGE_MAX };

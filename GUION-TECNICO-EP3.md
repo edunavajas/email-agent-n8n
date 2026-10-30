@@ -114,15 +114,16 @@ Pregunta de control que hice: "integración con SAP". El mejor fragmento fue una
 
 **HACES:** manda el 02 y el 03. En el móvil llega «📝 Borrador para aprobar»: remitente, asunto, categoría y confianza, por qué, el borrador en una cita y las fuentes. Tres botones: Aprobar, Rechazar, Editar.
 
-- Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo.
-- Rechazar no envía. La fila pasa a `rechazado`.
-- Editar pide un mensaje de respuesta. Hay que **responder** a ese mensaje (Telegram abre la respuesta solo). Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía. Un texto suelto no se envía a nadie.
-- Pulsa Aprobar dos veces delante de cámara: el segundo toque contesta "Ya se respondió" y no sale otro correo. Lo mismo con Aprobar después de Rechazar.
+- Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo. Los botones se van al momento («⏳ Aprobado. Enviando…») y, cuando sale el correo, el mensaje queda con «✅ Aprobado y enviado · 10:03» (hora de Madrid).
+- Rechazar no envía. La fila pasa a `rechazado` y el mensaje queda «❌ Rechazado · 10:05», sin botones.
+- Editar pide un mensaje de respuesta. Hay que **responder** a ese mensaje (Telegram abre la respuesta solo). Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía. Un texto suelto no se envía a nadie. Mientras, el borrador dice «✏️ Editando: responde al mensaje que te acabo de mandar»; cuando sale tu texto, «✅ Enviado con tu texto · 10:07».
+- Ya no hay segundo toque que enseñar: tras el primero, los botones desaparecen. Si tocas dos veces muy rápido, el segundo contesta "Ya está aprobado y en cola de envío" y no sale otro correo. Un botón de un mensaje viejo (ya respondido, rechazado o vencido) contesta con su aviso y deja el mensaje sin botones.
+- Si el SMTP falla, el mensaje dice «⚠️ Falló el envío: …» y llega otro aviso con Reintentar. Si el 03b no llega al 02, los botones vuelven al mensaje para pulsar Aprobar otra vez.
 - Solo vale tu chat (`telegram_chat_id`). Un botón desde otro chat no hace nada y queda apuntado como `telegram_ajeno`.
 
 **NO HE PULSADO NINGÚN BOTÓN.** No hay token de Telegram en el n8n del episodio. Los flujos están importados y parados.
 
-**SI FALLA:** "botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
+**SI FALLA:** si los botones no se van, abre la ejecución del 03b y mira «Quitar botones»: va con *Continue*, así que sale aunque Telegram diga que no ("message is not modified" = el mensaje ya tenía ese texto). "Botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
 
 **CENSURA:** el token del bot si abres BotFather o `getUpdates`.
 
@@ -221,6 +222,7 @@ Sin maquillar. Sirve para contarlo.
 10. **El freno anti-bucles retenía en silencio.** En la prueba con Gmail real, un cliente que preguntó dos cosas en una hora se quedó sin respuesta y sin aviso: la fila se quedaba en `retenido_bucle` y solo salía en el resumen del día siguiente. Ahora el freno sigue cortando el envío automático, pero el correo pasa al 03a y llega a Telegram con el borrador, los tres botones y el motivo.
 11. **`Re: (sin asunto)` rompe el hilo en Gmail.** A un correo sin asunto se le contestaba con `Re: (sin asunto)` y Gmail abría un hilo nuevo, con `In-Reply-To` y `References` correctos. Con `Re:` a secas lo mete en el mismo hilo. Ahora sale así.
 12. **Acentos rotos en el cuerpo con Gmail.** «El panel de producciÃ³n estÃ¡ caÃ­do» en la base, en Telegram, en la consulta al RAG y en la issue. El asunto, bien. Es el nodo IMAP de n8n 2.10.2 en formato simple: decodifica el quoted-printable sin mirar el charset y cada byte UTF-8 llega como un carácter latin1. Lo miré en el código de `@n8n/imap`, dentro de la imagen. Ahora `normalize.js` lo repara lo primero, solo cuando tiene pinta de eso y releído como UTF-8 es válido. No cambié al formato *resolved*: decodifica bien, pero baja siempre los adjuntos a la ejecución.
+13. **Los botones no se iban al pulsar.** Tras Aprobar, el mensaje seguía con los tres botones y no decía qué había pasado. Ahora se queda sin botones y con una línea: «✅ Aprobado y enviado · 10:03», «❌ Rechazado · 10:05»… Si esa edición falla, no se para nada.
 
 ---
 

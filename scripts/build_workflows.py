@@ -169,6 +169,35 @@ def telegram(name, x, y, chat_expr, text_expr, notes="", buttons=None, force_rep
     return node(name, "n8n-nodes-base.telegram", 1.2, x, y, parameters, notes, {"onError": on_error}, "telegram")
 
 
+def telegram_edit(name, x, y, chat_expr, message_expr, text_expr, notes="", buttons=None):
+    """editMessageText en HTML. Sin botones va un teclado vacío ({"inline_keyboard": []}):
+    Telegram quita los que había. Si la edición falla (mensaje igual, borrado,
+    demasiado viejo), el flujo sigue: el envío del correo no depende de ella."""
+    parameters = {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": chat_expr,
+        "messageId": message_expr,
+        "text": text_expr,
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": keyboard(*buttons) if buttons else {},
+        "additionalFields": {"parse_mode": "HTML", "disable_web_page_preview": True},
+    }
+    return node(name, "n8n-nodes-base.telegram", 1.2, x, y, parameters, notes, {"onError": "continueRegularOutput"}, "telegram")
+
+
+def message_context(alias):
+    """Columnas para rehacer el mensaje con botones de una fila (currentMessage en
+    src/format.js): si la fila apunta aún al aviso del 03a o a un aviso de fallo
+    del 02, si pasó por el freno anti-bucles y el último error de envío."""
+    return f"""EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = {alias}.id AND a.action = 'pedido_aprobacion'
+               AND a.detail->>'telegram_message_id' = {alias}.telegram_message_id) AS on_approval_message,
+       EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = {alias}.id AND a.action = 'retenido_bucle') AS loop_hold,
+       (SELECT a.detail->>'error' FROM mail_actions a WHERE a.mail_id = {alias}.id AND a.action = 'error_envio'
+         ORDER BY a.id DESC LIMIT 1) AS last_send_error"""
+
+
 def switch_if(name, x, y, left, right, notes=""):
     return node(
         name,
@@ -613,7 +642,7 @@ SELECT (SELECT count(*) FROM upd)::int AS updated""",
 def flow_reply():
     cfg = "$('Configuración').first().json"
     nodes = [
-        sticky("Notas respuesta", 80, 40, "### 02 Respuesta\n\nSolo envía si la fila está lista: `pendiente` con ruta auto, o `aprobado` desde Telegram. El UPDATE que la pasa a `enviando` es atómico: un doble toque no manda dos correos.\n\nEnvía un Code node de Python con smtplib, porque el nodo Send Email de n8n 2.10.2 no deja poner In-Reply-To ni References. El SMTP sale de las variables SMTP_* del contenedor de task runners.\n\nSi el envío falla: `error_envio` y aviso a Telegram con Reintentar.\n\nFreno anti-bucles: si esa dirección ya recibió una respuesta automática en la última hora, no sale sola. Pasa por `retenido_bucle` y va al 03a, con el motivo. Si se aprueba, vuelve aquí en modo manual, que no tiene freno."),
+        sticky("Notas respuesta", 80, 40, "### 02 Respuesta\n\nSolo envía si la fila está lista: `pendiente` con ruta auto, o `aprobado` desde Telegram. El UPDATE que la pasa a `enviando` es atómico: un doble toque no manda dos correos.\n\nEnvía un Code node de Python con smtplib, porque el nodo Send Email de n8n 2.10.2 no deja poner In-Reply-To ni References. El SMTP sale de las variables SMTP_* del contenedor de task runners.\n\nSi el envío falla: `error_envio` y aviso a Telegram con Reintentar.\n\nFreno anti-bucles: si esa dirección ya recibió una respuesta automática en la última hora, no sale sola. Pasa por `retenido_bucle` y va al 03a, con el motivo. Si se aprueba, vuelve aquí en modo manual, que no tiene freno.\n\nModo manual (un botón): al acabar, el mensaje que pulsaste se marca «✅ Aprobado y enviado» o «⚠️ Falló el envío», sin botones. Si esa edición falla, no cambia nada más."),
         webhook("Webhook respuesta", "mail-reply", 220, 300, "POST /webhook/mail-reply. Cabecera X-MAIL-API-Key."),
         config_node(460, 300, ["support_address", "approval_hours", "telegram_chat_id", "n8n_url"]),
         code("Leer petición", 700, 300, uuid_guard("mode: ['auto', 'manual'].includes(body.mode) ? body.mode : ''") .replace("valid }", "valid: valid && ['auto', 'manual'].includes(body.mode) }")),
@@ -630,17 +659,22 @@ def flow_reply():
       ($2::text = 'auto' AND status = 'pendiente' AND route = 'auto' AND NOT injection_flag)
       OR ($2::text = 'manual' AND status = 'aprobado')
     )
-  RETURNING id, message_id, from_address, subject, draft_reply, final_reply, injection_flag, references_header
+  RETURNING id, message_id, from_address, from_name, subject, category, confidence, draft_reply, final_reply,
+            reasoning, rag_sources, injection_flag, sensitive_flag, references_header,
+            telegram_chat_id, telegram_message_id
 )
-SELECT c.id::text AS id, c.message_id, c.from_address, c.subject, c.draft_reply, c.final_reply,
-       COALESCE(c.injection_flag, false) AS injection_flag, c.references_header,
+SELECT c.id::text AS id, c.message_id, c.from_address, c.from_name, c.subject, c.category, c.confidence,
+       c.draft_reply, c.final_reply, c.reasoning, c.rag_sources,
+       COALESCE(c.injection_flag, false) AS injection_flag, COALESCE(c.sensitive_flag, false) AS sensitive_flag,
+       c.references_header, c.telegram_chat_id, c.telegram_message_id,
+       """ + message_context("c") + """,
        (SELECT status FROM mail_messages WHERE id = $1::uuid) AS previous_status,
        (SELECT count(*) FROM mail_messages m
          WHERE c.id IS NOT NULL AND m.from_address = c.from_address AND m.status = 'respondido_auto'
            AND m.auto_replied_at > now() - interval '1 hour' AND m.id <> c.id)::int AS recent
 FROM (SELECT 1) AS one LEFT JOIN claimed c ON true""",
             "={{ [$json.mail_id, $json.mode] }}",
-            "pendiente/aprobado -> enviando en una sola sentencia. Si otra ejecución ya la cogió, no devuelve id.",
+            "pendiente/aprobado -> enviando en una sola sentencia. Si otra ejecución ya la cogió, no devuelve id. Trae también lo necesario para rehacer el mensaje de Telegram.",
         ),
         bool_if("¿Reclamada?", 1360, 300, "={{ !!$json.id }}"),
         postgres(
@@ -659,6 +693,10 @@ const blocked = Boolean($json.injection_flag);
 const text = request.mode === 'manual'
   ? ($json.final_reply || (blocked ? '' : $json.draft_reply) || '')
   : (blocked ? '' : ($json.draft_reply || ''));
+// Manual = viene de un botón. Ese mensaje se marca al acabar: enviado o fallo.
+const fromTelegram = request.mode === 'manual' && String($json.telegram_chat_id || '') !== '' && String($json.telegram_message_id || '') !== '';
+const telegramBase = fromTelegram ? currentMessage($json) : '';
+const edited = String($json.final_reply || '').trim() !== '';
 return { json: {
   ...$json,
   mode: request.mode,
@@ -668,6 +706,9 @@ return { json: {
   to_address: $json.from_address,
   support_address: config.support_address,
   recent: Number($json.recent || 0),
+  telegram_edit: fromTelegram,
+  telegram_base: telegramBase,
+  telegram_sent_text: fromTelegram ? withResult(telegramBase, resultLine(edited ? 'enviado_editado' : 'enviado', { when: madridTime(new Date()) })) : '',
 } };
 """, ("format.js",)),
         bool_if("¿Bloquear?", 1800, 300, "={{ $json.mode === 'auto' && $json.recent > 0 }}", "Ya hubo respuesta automática a esta dirección en la última hora. Sí: no sale sola, va a aprobación."),
@@ -762,14 +803,25 @@ return {"json": {**item, **result}}
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$json.id, $json.mode === 'auto' ? 'respondido_auto' : 'respondido_manual', $json.outgoing_body, $json.reply_message_id, $json.mode === 'auto' ? 'enviado_auto' : 'enviado_manual'] }}",
         ),
+        bool_if("¿Venía de Telegram?", 2700, 300, "={{ $('Preparar envío').item.json.telegram_edit === true }}", "Aprobado con un botón: el mensaje se marca como enviado. Va después de Marcar enviado: el correo ya salió."),
+        telegram_edit(
+            "Telegram: enviado",
+            2920,
+            220,
+            "={{ $('Preparar envío').item.json.telegram_chat_id }}",
+            "={{ $('Preparar envío').item.json.telegram_message_id }}",
+            "={{ $('Preparar envío').item.json.telegram_sent_text }}",
+            "«✅ Aprobado y enviado · hh:mm» o «✅ Enviado con tu texto · hh:mm». Si Telegram falla, no pasa nada: el correo ya salió.",
+        ),
         code("Error de envío", 2480, 520, """
 const mail = $('Preparar envío').item.json;
 const config = $('Configuración').first().json;
 // Si el nodo de Python no llega a ejecutarse (runner caído, fichero de runners sin
 // montar), n8n pasa el item tal cual por la salida de error, sin mensaje.
 const error = String($json.smtp_error || 'el nodo Enviar (Python) no se ejecutó: mira esa ejecución. Suele ser el contenedor task-runners sin conexión (reinícialo) o sin runners/n8n-task-runners.json montado').slice(0, 500);
-const hint = 'Queda en error_envio. Reintentar lo manda otra vez (tu texto si lo editaste). Si nadie pulsa, vence como una aprobación.';
-return { json: { ...mail, smtp_error: error, chat_id: config.telegram_chat_id, hours: config.approval_hours, text: failureMessage('no se pudo enviar la respuesta', { ...mail, hint }, error) } };
+// El mensaje del botón dice que falló; el aviso nuevo (con Reintentar) va debajo.
+const failedText = mail.telegram_edit === true ? withResult(mail.telegram_base, resultLine('fallo_envio', { detail: error, when: madridTime(new Date()) })) : '';
+return { json: { ...mail, smtp_error: error, chat_id: config.telegram_chat_id, hours: config.approval_hours, text: sendFailureMessage(mail, error), telegram_failed_text: failedText } };
 """, ("format.js",), notes="Llega aquí si smtplib falla o si el runner no deja ejecutar el nodo."),
         postgres(
             "Marcar error",
@@ -788,9 +840,19 @@ return { json: { ...mail, smtp_error: error, chat_id: config.telegram_chat_id, h
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$json.id, $json.smtp_error, $json.hours] }}",
         ),
+        bool_if("¿Venía de Telegram? (fallo)", 2920, 520, "={{ $('Error de envío').item.json.telegram_edit === true }}", "Solo si se aprobó con un botón. Las dos salidas siguen a Avisar fallo."),
+        telegram_edit(
+            "Telegram: falló",
+            3140,
+            420,
+            "={{ $('Error de envío').item.json.telegram_chat_id }}",
+            "={{ $('Error de envío').item.json.telegram_message_id }}",
+            "={{ $('Error de envío').item.json.telegram_failed_text }}",
+            "El mensaje que pulsaste se queda sin botones y con «⚠️ Falló el envío». Reintentar llega en el aviso nuevo.",
+        ),
         telegram(
             "Avisar fallo",
-            2920,
+            3360,
             520,
             "={{ $('Error de envío').item.json.chat_id }}",
             "={{ $('Error de envío').item.json.text }}",
@@ -800,7 +862,7 @@ SELECT (SELECT id::text FROM upd) AS id""",
         ),
         postgres(
             "Guardar aviso",
-            3140,
+            3580,
             520,
             """UPDATE mail_messages
 SET telegram_chat_id = $2, telegram_message_id = $3
@@ -829,8 +891,13 @@ RETURNING id::text""",
     link(c, "Enviar", "Error de envío", 1)
     link(c, "¿Enviado?", "Marcar enviado", 0)
     link(c, "¿Enviado?", "Error de envío", 1)
+    link(c, "Marcar enviado", "¿Venía de Telegram?")
+    link(c, "¿Venía de Telegram?", "Telegram: enviado", 0)
     link(c, "Error de envío", "Marcar error")
-    link(c, "Marcar error", "Avisar fallo")
+    link(c, "Marcar error", "¿Venía de Telegram? (fallo)")
+    link(c, "¿Venía de Telegram? (fallo)", "Telegram: falló", 0)
+    link(c, "¿Venía de Telegram? (fallo)", "Avisar fallo", 1)
+    link(c, "Telegram: falló", "Avisar fallo")
     link(c, "Avisar fallo", "Guardar aviso")
     return pack("02 - Respuesta", nodes, c)
 
@@ -875,20 +942,8 @@ FROM (SELECT 1) AS one LEFT JOIN claimed c ON true""",
             "={{ [$('Leer id').item.json.mail_id, $('Leer id').item.json.reason ? '03a ' + $('Leer id').item.json.reason : '03a'] }}",
         ),
         code("Texto Telegram", 1580, 300, """
-const sources = typeof $json.rag_sources === 'string' ? JSON.parse($json.rag_sources) : ($json.rag_sources || []);
-const text = approvalMessage({
-  from_address: $json.from_address,
-  from_name: $json.from_name,
-  subject: $json.subject,
-  category: $json.category,
-  confidence: $json.confidence,
-  draft_reply: $json.draft_reply,
-  reasoning: $json.reasoning,
-  sources,
-  injection: $json.injection_flag,
-  sensitive: $json.sensitive_flag,
-  loop_hold: $json.loop_hold === true,
-});
+// approvalFromRow: el 02 y el 03b rehacen este mismo texto para quitarle los botones.
+const text = approvalMessage(approvalFromRow($json));
 return { json: { ...$json, blocked: $json.injection_flag === true, telegram_text: text, chat_id: String($('Configuración').first().json.telegram_chat_id) } };
 """, ("format.js",), notes="Remitente, asunto, categoría, confianza, motivo, borrador y fuentes. Si viene del freno anti-bucles, lo dice. Cabe en el móvil."),
         bool_if("¿Bloqueado?", 1800, 300, "={{ $json.blocked }}"),
@@ -977,8 +1032,9 @@ SELECT (SELECT id::text FROM upd) AS id""",
 
 def flow_callback():
     cfg = "$('Configuración').first().json"
+    what = "$('Qué hacer').item.json"
     nodes = [
-        sticky("Notas botones", 80, 40, "### 03b Botones\n\nTrigger de Telegram, no un Wait. Busca la fila por el message_id guardado en 03a.\n\nSolo vale el chat de `telegram_chat_id` (y, si lo rellenas, las personas de `telegram_user_ids`). Un botón o un texto de otro chat no hace nada y queda apuntado como `telegram_ajeno`.\n\nCada botón es un UPDATE ... WHERE status = 'esperando_aprobacion' (o edición, o error de envío): aprobar dos veces, aprobar tras rechazar o tras vencer no envía nada y el botón lo dice.\n\nEditar pide un texto. Hay que responder a ese mensaje: un texto suelto no se envía a nadie."),
+        sticky("Notas botones", 80, 40, "### 03b Botones\n\nTrigger de Telegram, no un Wait. Busca la fila por el message_id guardado en 03a.\n\nSolo vale el chat de `telegram_chat_id` (y, si lo rellenas, las personas de `telegram_user_ids`). Un botón o un texto de otro chat no hace nada y queda apuntado como `telegram_ajeno`.\n\nCada botón es un UPDATE ... WHERE status = 'esperando_aprobacion' (o edición, o error de envío): aprobar dos veces, aprobar tras rechazar o tras vencer no envía nada y el botón lo dice.\n\nEditar pide un texto. Hay que responder a ese mensaje: un texto suelto no se envía a nadie.\n\nAl decidir, el mensaje pierde los botones y gana una línea con lo que pasó y la hora de Madrid (Quitar botones). Un botón viejo también lo deja sin botones. Si el 02 no recibe el envío, los botones vuelven (Devolver botones). Ninguna edición para el flujo si falla."),
         node("Telegram", "n8n-nodes-base.telegramTrigger", 1.2, 220, 300, {
             "updates": ["callback_query", "message"],
             "additionalFields": {},
@@ -1005,10 +1061,13 @@ RETURNING id""",
             1360,
             180,
             """WITH target AS (
-  SELECT id, status, injection_flag, COALESCE(final_reply, '') <> '' AS has_final_reply,
-         (approval_due_at IS NOT NULL AND approval_due_at <= now()) AS expired
-  FROM mail_messages
-  WHERE telegram_chat_id = $1 AND telegram_message_id = $2
+  SELECT m.id, m.status, m.injection_flag, COALESCE(m.final_reply, '') <> '' AS has_final_reply,
+         (m.approval_due_at IS NOT NULL AND m.approval_due_at <= now()) AS expired,
+         m.from_address, m.from_name, m.subject, m.category, m.confidence, m.draft_reply, m.reasoning,
+         m.rag_sources, m.sensitive_flag, m.telegram_chat_id, m.telegram_message_id,
+         """ + message_context("m") + """
+  FROM mail_messages m
+  WHERE m.telegram_chat_id = $1 AND m.telegram_message_id = $2
 ), expire AS (
   UPDATE mail_messages m SET status = 'aprobacion_vencida'
   FROM target t
@@ -1032,63 +1091,91 @@ RETURNING id""",
 )
 SELECT t.id::text AS id, t.status AS previous_status, COALESCE(t.injection_flag, false) AS injection_flag,
        COALESCE(t.has_final_reply, false) AS has_final_reply, COALESCE(t.expired, false) AS expired,
-       (SELECT count(*) FROM claimed)::int AS claimed
+       (SELECT count(*) FROM claimed)::int AS claimed,
+       t.from_address, t.from_name, t.subject, t.category, t.confidence, t.draft_reply, t.reasoning, t.rag_sources,
+       COALESCE(t.sensitive_flag, false) AS sensitive_flag, t.telegram_chat_id, t.telegram_message_id,
+       COALESCE(t.on_approval_message, true) AS on_approval_message, COALESCE(t.loop_hold, false) AS loop_hold,
+       t.last_send_error
 FROM (SELECT 1) AS one LEFT JOIN target t ON true""",
             "={{ [$json.chat_id, $json.message_id, $json.data] }}",
-            "Transición atómica. Si la fila ya no está en un estado que admita el botón, claimed = 0 y no se hace nada.",
+            "Transición atómica. Si la fila ya no está en un estado que admita el botón, claimed = 0 y no se hace nada. Trae también lo necesario para rehacer el mensaje sin botones.",
         ),
         code("Qué hacer", 1580, 180, """
 const update = $('Leer update').item.json;
 const outcome = callbackOutcome($json, update.data);
-return { json: { ...update, id: $json.id || null, ...outcome } };
-""", ("telegram.js",)),
+// El texto se rehace desde la fila (con formato). Sin fila, el que trae el botón.
+const base = $json.id ? currentMessage($json) : plainMessage(update.message_text);
+const line = outcome.result ? resultLine(outcome.result, { when: outcome.timed ? madridTime(new Date()) : '' }) : '';
+const edit = line !== '' && base !== '';
+return { json: { ...update, id: $json.id || null, ...outcome, edit, edit_text: edit ? withResult(base, line) : '' } };
+""", ("telegram.js", "format.js"), notes="Qué hace el botón y cómo queda el mensaje: sin botones y con una línea («✅ Aprobado y enviado · 10:03», «❌ Rechazado · 10:05»...)."),
         node("Responder botón", "n8n-nodes-base.telegram", 1.2, 1800, 180, {
             "resource": "callback",
             "operation": "answerQuery",
             "queryId": "={{ $json.callback_id }}",
             "additionalFields": {"text": "={{ $json.notice }}", "show_alert": "={{ $json.next === 'none' }}"},
         }, "Quita el reloj del botón y dice qué ha pasado. Si ya no hay nada que hacer, sale como alerta.", {"onError": "continueRegularOutput"}, "telegram"),
-        switch_if("¿Enviar?", 2020, 180, "={{ $('Qué hacer').item.json.next }}", "send"),
+        bool_if("¿Quitar botones?", 2020, 180, f"={{{{ {what}.edit && {what}.next !== 'edit' }}}}", "Aprobar, Rechazar y botones viejos. Editar los quita cuando ya ha salido la petición de texto. Las dos salidas siguen."),
+        telegram_edit(
+            "Quitar botones",
+            2240,
+            80,
+            f"={{{{ {what}.chat_id }}}}",
+            f"={{{{ {what}.message_id }}}}",
+            f"={{{{ {what}.edit_text }}}}",
+            "Mismo texto, sin botones y con lo que pasó. Va antes de llamar al 02: la línea final («✅ Aprobado y enviado») la pone el 02 al enviar.",
+        ),
+        switch_if("¿Enviar?", 2460, 180, f"={{{{ {what}.next }}}}", "send"),
         http_json(
             "Enviar aprobado",
-            2240,
+            2680,
             60,
             f"={{{{ {cfg}.n8n_url.replace(/\\/$/, '') + '/webhook/mail-reply' }}}}",
-            "={{ JSON.stringify({ mail_id: $('Qué hacer').item.json.id, mode: 'manual' }) }}",
+            f"={{{{ JSON.stringify({{ mail_id: {what}.id, mode: 'manual' }}) }}}}",
             "mail",
             "El flujo 02 manda el borrador (o tu texto, si lo editaste).",
         ),
-        code("Fallo aprobado", 2480, 60, """
+        code("Fallo aprobado", 2920, 60, """
 const row = $('Qué hacer').item.json;
 const raw = $json.error;
 return { json: { id: row.id, fallo: String(typeof raw === 'string' ? raw : (raw && raw.message) || 'sin detalle').slice(0, 400) } };
 """),
-        switch_if("¿Rechazar?", 2240, 260, "={{ $('Qué hacer').item.json.next }}", "reject"),
+        switch_if("¿Rechazar?", 2680, 260, f"={{{{ {what}.next }}}}", "reject"),
         postgres(
             "Apuntar rechazo",
-            2480,
+            2920,
             260,
             "INSERT INTO mail_actions (mail_id, action, detail) VALUES ($1::uuid, 'rechazado', '{}'::jsonb) RETURNING id",
-            "={{ [$('Qué hacer').item.json.id] }}",
+            f"={{{{ [{what}.id] }}}}",
         ),
-        switch_if("¿Editar?", 2480, 400, "={{ $('Qué hacer').item.json.next }}", "edit"),
+        switch_if("¿Editar?", 2920, 400, f"={{{{ {what}.next }}}}", "edit"),
         telegram(
             "Pedir texto",
-            2700,
+            3140,
             400,
-            "={{ $('Qué hacer').item.json.chat_id }}",
+            f"={{{{ {what}.chat_id }}}}",
             "✏️ Responde a este mensaje con el texto corregido. Eso es lo que se enviará.",
             "No espera. La respuesta la coge este mismo flujo, como otro update.",
             force_reply=True,
-            reply_to="={{ $('Qué hacer').item.json.message_id }}",
+            reply_to=f"={{{{ {what}.message_id }}}}",
             on_error="continueRegularOutput",
         ),
         postgres(
             "Guardar edición",
-            2920,
+            3360,
             400,
             "UPDATE mail_messages SET telegram_edit_id = $2 WHERE id = $1::uuid AND status = 'esperando_edicion' AND $2::text <> '' RETURNING id::text",
-            "={{ [$('Qué hacer').item.json.id, $json.result && $json.result.message_id ? String($json.result.message_id) : ''] }}",
+            f"={{{{ [{what}.id, $json.result && $json.result.message_id ? String($json.result.message_id) : ''] }}}}",
+        ),
+        bool_if("¿Texto pedido?", 3580, 400, "={{ !!$json.id }}", "Solo si salió la petición de texto. Si no, el mensaje conserva sus botones y puedes pulsar Editar otra vez."),
+        telegram_edit(
+            "Quitar botones al editar",
+            3800,
+            400,
+            f"={{{{ {what}.chat_id }}}}",
+            f"={{{{ {what}.message_id }}}}",
+            f"={{{{ {what}.edit_text }}}}",
+            "«✏️ Editando: responde al mensaje que te acabo de mandar».",
         ),
         switch_if("¿Texto?", 1360, 400, "={{ $json.kind }}", "text"),
         postgres(
@@ -1112,7 +1199,7 @@ return { json: { id: row.id, fallo: String(typeof raw === 'string' ? raw : (raw 
 )
 SELECT (SELECT id::text FROM upd) AS id""",
             "={{ [$json.chat_id, $json.reply_to, $json.text] }}",
-            "Solo vale un texto que responde al mensaje 'Responde a este mensaje...'. esperando_edicion -> aprobado.",
+            "Solo vale un texto que responde al mensaje 'Responde a este mensaje...'. esperando_edicion -> aprobado. El 02 marca el mensaje «✅ Enviado con tu texto».",
         ),
         bool_if("¿Edición?", 1800, 640, "={{ !!$json.id }}"),
         http_json(
@@ -1138,33 +1225,53 @@ return { json: { id: row.id, fallo: String(typeof raw === 'string' ? raw : (raw 
         ),
         postgres(
             "Deshacer aprobación",
-            2700,
+            3140,
             60,
             """WITH upd AS (
   UPDATE mail_messages SET status = 'esperando_aprobacion'
   WHERE id = $1::uuid AND status = 'aprobado'
-  RETURNING id, from_address, subject
+  RETURNING id, from_address, from_name, subject, category, confidence, draft_reply, reasoning, rag_sources,
+            injection_flag, sensitive_flag, telegram_chat_id, telegram_message_id
 ), log AS (
   INSERT INTO mail_actions (mail_id, action, detail)
   VALUES ($1::uuid, 'error_llamada_02', jsonb_build_object('error', $2::text))
   RETURNING id
 )
-SELECT u.id::text AS id, u.from_address, u.subject, $2::text AS fallo
+SELECT u.id::text AS id, u.from_address, u.from_name, u.subject, u.category, u.confidence, u.draft_reply,
+       u.reasoning, u.rag_sources, COALESCE(u.injection_flag, false) AS injection_flag,
+       COALESCE(u.sensitive_flag, false) AS sensitive_flag, u.telegram_chat_id, u.telegram_message_id,
+       """ + message_context("u") + """,
+       $2::text AS fallo
 FROM (SELECT 1) AS one LEFT JOIN upd u ON true""",
             "={{ [$json.id, $json.fallo] }}",
             "El 02 no recibió la petición: la fila vuelve a esperar y se puede pulsar otra vez.",
         ),
-        code("Texto fallo", 2920, 60, """
+        code("Texto fallo", 3360, 60, """
 const config = $('Configuración').first().json;
 const hint = 'No se ha enviado. ¿Está activo el flujo 02? ¿n8n_url y Mail API Key cuadran? Cuando esté, pulsa Aprobar otra vez: si editaste, sale tu texto.';
-return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el flujo 02 no recibió el envío', { ...$json, hint }, $json.fallo) } };
+// La fila vuelve a esperar: el mensaje que pulsaste recupera sus botones.
+const restore = Boolean($json.id) && String($json.telegram_chat_id || '') !== '' && String($json.telegram_message_id || '') !== '';
+const label = $json.on_approval_message === false && $json.last_send_error ? 'Reintentar' : 'Aprobar';
+const restoreText = restore ? withResult(currentMessage($json), resultLine('fallo_02', { when: madridTime(new Date()), tail: 'Pulsa ' + label + ' otra vez cuando esté.' })) : '';
+return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el flujo 02 no recibió el envío', { ...$json, hint }, $json.fallo), restore, restore_chat_id: $json.telegram_chat_id || '', restore_message_id: $json.telegram_message_id || '', restore_text: restoreText, approve_label: label } };
 """, ("format.js",)),
+        bool_if("¿Devolver botones?", 3580, 60, "={{ $json.restore }}", "Solo si la fila volvió a esperando_aprobacion. Las dos salidas siguen a Avisar fallo."),
+        telegram_edit(
+            "Devolver botones",
+            3800,
+            -60,
+            "={{ $('Texto fallo').item.json.restore_chat_id }}",
+            "={{ $('Texto fallo').item.json.restore_message_id }}",
+            "={{ $('Texto fallo').item.json.restore_text }}",
+            "El mensaje vuelve a tener Aprobar (o Reintentar), Rechazar y Editar, con «⚠️ Falló el envío».",
+            buttons=[("={{ $('Texto fallo').item.json.approve_label }}", "approve"), ("Rechazar", "reject"), ("Editar", "edit")],
+        ),
         telegram(
             "Avisar fallo",
-            3140,
+            4020,
             60,
-            "={{ $json.chat_id }}",
-            "={{ $json.text }}",
+            "={{ $('Texto fallo').item.json.chat_id }}",
+            "={{ $('Texto fallo').item.json.text }}",
             on_error="continueRegularOutput",
         ),
     ]
@@ -1179,7 +1286,10 @@ return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el fluj
     link(c, "¿Callback?", "¿Texto?", 1)
     link(c, "Resolver botón", "Qué hacer")
     link(c, "Qué hacer", "Responder botón")
-    link(c, "Responder botón", "¿Enviar?")
+    link(c, "Responder botón", "¿Quitar botones?")
+    link(c, "¿Quitar botones?", "Quitar botones", 0)
+    link(c, "¿Quitar botones?", "¿Enviar?", 1)
+    link(c, "Quitar botones", "¿Enviar?")
     link(c, "¿Enviar?", "Enviar aprobado", 0)
     link(c, "¿Enviar?", "¿Rechazar?", 1)
     link(c, "Enviar aprobado", "Fallo aprobado", 1)
@@ -1188,6 +1298,8 @@ return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el fluj
     link(c, "¿Rechazar?", "¿Editar?", 1)
     link(c, "¿Editar?", "Pedir texto", 0)
     link(c, "Pedir texto", "Guardar edición")
+    link(c, "Guardar edición", "¿Texto pedido?")
+    link(c, "¿Texto pedido?", "Quitar botones al editar", 0)
     link(c, "¿Texto?", "Guardar texto", 0)
     link(c, "Guardar texto", "¿Edición?")
     link(c, "¿Edición?", "Enviar editado", 0)
@@ -1195,7 +1307,10 @@ return { json: { chat_id: config.telegram_chat_id, text: failureMessage('el fluj
     link(c, "Enviar editado", "Fallo editado", 1)
     link(c, "Fallo editado", "Deshacer aprobación")
     link(c, "Deshacer aprobación", "Texto fallo")
-    link(c, "Texto fallo", "Avisar fallo")
+    link(c, "Texto fallo", "¿Devolver botones?")
+    link(c, "¿Devolver botones?", "Devolver botones", 0)
+    link(c, "¿Devolver botones?", "Avisar fallo", 1)
+    link(c, "Devolver botones", "Avisar fallo")
     return pack("03b - Botones", nodes, c)
 
 
