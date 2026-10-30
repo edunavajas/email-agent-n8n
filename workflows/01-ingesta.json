@@ -116,6 +116,12 @@
               "type": "string"
             },
             {
+              "id": "39faa8b5-27b2-597b-92ea-099369c1c95c",
+              "name": "rag_source_type",
+              "value": "repo",
+              "type": "string"
+            },
+            {
               "id": "ddaacb1d-960c-50bf-af82-76a67bda411a",
               "name": "n8n_url",
               "value": "http://localhost:5678",
@@ -350,7 +356,7 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ query: ($json.subject + '\\n' + $json.body).slice(0, 1200), limit: 5, source_type: 'all' }) }}",
+        "jsonBody": "={{ JSON.stringify({ query: ($json.subject + '\\n' + $json.body).slice(0, 1200), limit: 5, source_type: $('Configuración').first().json.rag_source_type || 'repo' }) }}",
         "options": {
           "timeout": 120000,
           "response": {

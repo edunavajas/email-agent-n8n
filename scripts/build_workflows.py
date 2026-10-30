@@ -268,6 +268,11 @@ FIELDS = {
     "llm_model": ("deepseek-flash", "string"),
     # n8n se llama a sí mismo: localhost:5678 es el propio contenedor de n8n.
     "rag_url": ("http://localhost:5678/webhook/rag-search", "string"),
+    # Dónde busca el agente: repo = la FAQ y los documentos de soporte indexados desde
+    # el repositorio; outline = solo Outline; all = todo. Con las transcripciones de
+    # los vídeos en el índice, "all" deja la FAQ fuera del top 5 en cuanto la pregunta
+    # no repite sus palabras (probado con Gmail real).
+    "rag_source_type": ("repo", "string"),
     "n8n_url": ("http://localhost:5678", "string"),
     "telegram_chat_id": ("cambia-esto", "string"),
     "telegram_user_ids": ("", "string"),
@@ -375,7 +380,7 @@ def flow_ingest():
             "options": {},
         }, "Formato simple: textPlain, textHtml y todas las cabeceras en metadata (Message-ID, Auto-Submitted, List-Id...). Sin adjuntos.", credentials="imap"),
         webhook("Probar correo", "mail-ingest", 220, 520, "POST /webhook/mail-ingest con el mismo JSON que normaliza el flujo. Solo pruebas."),
-        config_node(480, 400, ["support_address", "confidence_threshold", "min_rag_score", "sensitive_topics", "llm_base_url", "llm_model", "rag_url", "n8n_url", "telegram_chat_id", "prompt"]),
+        config_node(480, 400, ["support_address", "confidence_threshold", "min_rag_score", "sensitive_topics", "llm_base_url", "llm_model", "rag_url", "rag_source_type", "n8n_url", "telegram_chat_id", "prompt"]),
         code("Normalizar", 740, 400, """
 return { json: normalizeEmail($json) };
 """, ("normalize.js",), notes="Quita HTML, rastreadores, firma y respuestas citadas. Sin Message-ID, calcula uno estable (generado-...)."),
@@ -437,7 +442,7 @@ RETURNING id""",
             2060,
             400,
             f"={{{{ {cfg}.rag_url }}}}",
-            "={{ JSON.stringify({ query: ($json.subject + '\\n' + $json.body).slice(0, 1200), limit: 5, source_type: 'all' }) }}",
+            f"={{{{ JSON.stringify({{ query: ($json.subject + '\\n' + $json.body).slice(0, 1200), limit: 5, source_type: {cfg}.rag_source_type || 'repo' }}) }}}}",
             "rag",
             "La respuesta tiene que salir de la base del episodio 2.",
             text=True,

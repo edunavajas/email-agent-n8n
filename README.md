@@ -95,6 +95,7 @@ Partes del episodio 2 ya funcionando: Coolify, PostgreSQL + pgvector, n8n 2.10.2
    | `telegram_user_ids` | 03b | Vacío si el chat es privado. Si es un grupo, los id de quienes pueden decidir, separados por comas. |
    | `n8n_url` | 01, 02, 03b | `http://localhost:5678`: n8n se llama a sí mismo, sin salir a internet. |
    | `rag_url` | 01 | `http://localhost:5678/webhook/rag-search` si el RAG del episodio 2 vive en el mismo n8n. |
+   | `rag_source_type` | 01 | Dónde busca el agente: `repo` (de serie: la FAQ y los documentos de soporte indexados desde el repo), `outline` o `all`. Ver [Dónde busca](#dónde-busca). |
    | `llm_base_url`, `llm_model` | 01 | Ver [Modelo](#modelo). |
    | `github_repo`, `github_api_url` | 04 | `tu-usuario/email-agent-sandbox` y `https://api.github.com`. |
    | `confidence_threshold`, `min_rag_score`, `sensitive_topics` | 01 | Ver [Umbral de confianza](#umbral-de-confianza). |
@@ -210,6 +211,10 @@ Está en el nodo Configuración del flujo 01, campo `confidence_threshold`. De s
 - Si lo **bajas** (0,5), el sistema contesta más solo. También se cuela más una respuesta que suena segura y no lo es.
 
 No basta el número. Una consulta frecuente solo se envía sola si, además, el fragmento del RAG supera `min_rag_score` (0,45) **y** el texto del fragmento contiene las palabras de la pregunta. En las pruebas, una pregunta sobre SAP que no está en la base igual devolvía fragmentos con score 0,86 de páginas que no hablan de SAP. El score del episodio 2 no es una prueba de que la página responda.
+
+### Dónde busca
+
+El 01 consulta el RAG con `source_type` = `rag_source_type` (de serie `repo`). En la prueba real, con las 77 transcripciones de vídeos del episodio 2 en el mismo índice y `all`, «¿a qué hora abre el soporte los viernes?» devolvía cinco despedidas de vídeos con score 0,86-0,87 y la FAQ ni aparecía: el correo iba a Telegram por falta de fuente. Con `repo`, la FAQ sale primera (0,855). Si tu documentación de soporte vive en Outline, pon `outline`; `all` solo si el índice tiene únicamente documentación de soporte.
 
 Precios, plazos, contratos, devoluciones, reembolsos, DNI, IBAN y tarjeta van a una persona aunque la confianza sea 0,99. La lista es `sensitive_topics`, separada por comas.
 

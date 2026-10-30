@@ -717,4 +717,9 @@ const bugText = runNode(actionsFlow, 'Texto bug', { id: 'b1' }, { 'Acuse bug': {
 assert.strictEqual(bugText.telegram_text, bugSent);
 assert.ok(runNode(actionsFlow, 'Texto lead', {}, { 'Reclamar': { id: 'l1', from_address: 'marta@empresa.example', subject: 'Demo', draft_reply: 'Hola' }, 'Configuración': { telegram_chat_id: '111' } }).telegram_text.startsWith('💼 <b>Lead nuevo</b>'));
 
+// Dónde busca: de serie solo la documentación de soporte del repo, no las transcripciones.
+const ragSource = ingestConfig.parameters.assignments.assignments.find((item) => item.name === 'rag_source_type');
+assert.ok(ragSource && ragSource.value === 'repo');
+assert.ok(nodeOf('01-ingesta.json', 'Buscar RAG').parameters.jsonBody.includes("source_type: $('Configuración').first().json.rag_source_type"));
+
 console.log('check ok');
