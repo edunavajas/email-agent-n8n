@@ -163,10 +163,14 @@ Hechos comprobados en la documentación de Google:
 - **Spam**: Gmail filtra el spam antes de que llegue al cliente. En IMAP las etiquetas aparecen como carpetas y el flujo 01 lee solo `INBOX` (acción posterior `read`, formato simple). Lo que Gmail mande a Spam no está en `INBOX` y el flujo no lo ve. Fuente: https://support.google.com/mail/answer/78892?hl=es
 - **Remitente**: Gmail pone como From la cuenta que inicia sesión, salvo que la dirección sea un alias suyo. Por eso `support_address` tiene que ser esa cuenta.
 
-<!-- E2E: confirmar en la prueba real: si los correos de prueba caen en Spam o en Promociones -->
-<!-- E2E: confirmar en la prueba real: si la respuesta aparece en el mismo hilo en Gmail -->
-<!-- E2E: confirmar en la prueba real: si el nodo IMAP los marca como leídos en la web de Gmail -->
-<!-- E2E: confirmar en la prueba real: si Gmail conserva el Message-ID propio de la respuesta (reply_message_id) -->
+Comprobado en la prueba real (octubre de 2026, Gmail personal a Gmail del agente):
+
+- Los correos de prueba entraron en Recibidos, pestaña Principal (marcados Importante). Ninguno en Spam ni en Promociones. Las respuestas llegaron a Recibidos del cliente.
+- La respuesta cae en el mismo hilo en los dos buzones (mismo `X-GM-THRID`), siempre que el asunto coincida: con «Re: (sin asunto)» Gmail abría otro hilo, por eso un asunto vacío sale como «Re:».
+- El nodo IMAP los deja leídos (`\Seen`) en la web de Gmail.
+- Gmail conserva el Message-ID que pone `send_mail.py`: el de Enviados es el mismo que guarda `reply_message_id`. Cada respuesta aparece una sola vez en Enviados.
+- Al publicar el 01, n8n procesa los correos sin leer que ya hay en `INBOX`. En una cuenta nueva son los avisos de seguridad de Google: se guardan como `ignorado_autorespuesta` (remitente `no-reply@`) y no se contesta nada.
+- Recoge cada correo entre 25 s y 2,5 min después de enviarlo (casi siempre menos de 1 min), y siguió conectado tras unas 12 h sin correos.
 
 ## Otro buzón: Hostinger Business Email o el de vuestra empresa
 
@@ -234,9 +238,7 @@ Tarifa oficial a 29 de octubre de 2026 (https://api-docs.deepseek.com/quick_star
 
 La hora punta es de 01:00 a 04:00 y de 06:00 a 10:00 UTC, de lunes a viernes. El resto, fines de semana incluidos, es fuera de punta.
 
-Un correo normal, ya limpio, más el prompt y cinco fragmentos, son unos 3.000 tokens de entrada y unos 400 de salida. Mil correos, sin caché, salen por unos **0,70 $** fuera de punta y **1,40 $** en punta. Con la caché del prompt, menos.
-
-<!-- E2E: confirmar tokens reales por correo con la prueba real -->
+En la prueba real (13 llamadas), un correo gastó de media 1.687 tokens de entrada (unos 384 en caché) y 172 de salida. Unos 0,0003 $ por correo: mil correos salen por unos **0,30 $** fuera de punta y **0,60 $** en punta.
 
 Qwen3.8 Flash (lo que en la práctica es el "Qwen 3.8 Lite") está en unos 0,15 $ / 0,47 $ por millón. GLM-5.3 Flash, en la tarifa de Z.ai, unos 0,15 $ / 0,50 $. Los dos clasifican en español. Salen más caros en la salida, que es justo el JSON. OpenAI queda como alternativa si la empresa ya lo exige: para clasificar no hace falta el modelo de frontera y la factura se nota.
 
@@ -440,7 +442,7 @@ python3 test-emails/send.py --resend 01   # reutiliza el Message-ID del último 
 
 `--resend 01` es la prueba de duplicados. Con Gmail, ese reenvío puede no llegar al buzón (Gmail deduplica por Message-ID). Si no llega, la prueba de duplicados se hace con `POST /webhook/mail-ingest` y el mismo `message_id` dos veces.
 
-<!-- E2E: confirmar en la prueba real si el reenvío con el mismo Message-ID llega o lo descarta Gmail -->
+En la prueba real no hubo segundo buzón con contraseña de aplicación, así que `--resend` no se probó contra Gmail. La deduplicación sí: el mismo `message_id` dos veces por `mail-ingest` deja una sola fila y la acción `duplicado`, sin segunda issue ni segunda respuesta. Y cuando llegan varios correos casi a la vez, el trigger IMAP lee alguno dos veces: la misma deduplicación lo para.
 
 | Fichero | Qué tiene que pasar |
 |---|---|
