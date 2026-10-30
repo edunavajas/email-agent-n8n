@@ -49,7 +49,8 @@ ALTER TABLE mail_messages ADD COLUMN IF NOT EXISTS reply_message_id text;
 --   01: procesando -> pendiente | ignorado_autorespuesta | error_interno
 --   02: pendiente/aprobado -> enviando -> respondido_auto | respondido_manual
 --       | retenido_bucle | error_envio
---   03a: pendiente -> avisando -> esperando_aprobacion | error_aviso
+--       (retenido_bucle = freno anti-bucles: el 02 llama enseguida al 03a)
+--   03a: pendiente/retenido_bucle -> avisando -> esperando_aprobacion | error_aviso
 --   03b: esperando_aprobacion/esperando_edicion/error_envio -> aprobado
 --       | rechazado | esperando_edicion | aprobacion_vencida
 --   04: pendiente -> procesando_accion -> descartado | lead_registrado

@@ -5,6 +5,65 @@
 
 const crypto = require('crypto');
 
+// Acentos rotos del nodo IMAP de n8n 2.10.2 en formato "simple". @n8n/imap
+// decodifica el quoted-printable sin pasarle el charset de la parte
+// (getPartData llama a PartData.fromData sin él), así que un cuerpo UTF-8 de
+// Gmail llega con cada byte leído como latin1: "producciÃ³n", "Â¿cuÃ¡l". El
+// asunto llega bien porque va por la cabecera (RFC 2047).
+// Se repara solo si tiene pinta de eso, todo el texto cabe en latin1 y la vuelta
+// es UTF-8 válido. Un texto correcto ("producción", "São Paulo", emojis) no se toca.
+const MOJIBAKE = /[\u00C2-\u00F4][\u0080-\u00BF]/;
+
+// UTF-8 a mano, por si el runner no tuviera Buffer (en n8n 2.10.2 sí lo tiene).
+// Cada carácter del texto es un byte. Devuelve null si no es UTF-8 válido.
+function decodeUtf8Bytes(text) {
+  let out = '';
+  for (let i = 0; i < text.length;) {
+    const lead = text.charCodeAt(i);
+    if (lead < 0x80) {
+      out += text[i];
+      i += 1;
+      continue;
+    }
+    const size = lead >= 0xC2 && lead <= 0xDF ? 2 : lead >= 0xE0 && lead <= 0xEF ? 3 : lead >= 0xF0 && lead <= 0xF4 ? 4 : 0;
+    if (!size || i + size > text.length) return null;
+    let code = lead & (size === 2 ? 0x1F : size === 3 ? 0x0F : 0x07);
+    for (let k = 1; k < size; k += 1) {
+      const next = text.charCodeAt(i + k);
+      if ((next & 0xC0) !== 0x80) return null;
+      code = (code << 6) | (next & 0x3F);
+    }
+    if (size === 3 && (code < 0x800 || (code >= 0xD800 && code <= 0xDFFF))) return null;
+    if (size === 4 && (code < 0x10000 || code > 0x10FFFF)) return null;
+    out += String.fromCodePoint(code);
+    i += size;
+  }
+  return out;
+}
+
+// charset de la cabecera Content-Type del correo, solo si es una parte de texto.
+// En un multipart (lo normal en Gmail) el charset va en cada parte y aquí no está.
+function declaredCharset(headers) {
+  const type = String((headers && headers['content-type']) || '');
+  if (!/^\s*text\//i.test(type)) return '';
+  const match = type.match(/charset\s*=\s*"?([^";\s]+)/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function repairMojibake(value, charset = '') {
+  const text = String(value ?? '');
+  if (!MOJIBAKE.test(text)) return text;
+  // El correo dice que no es UTF-8: lo que llega no es UTF-8 mal leído.
+  if (charset && !/^utf-?8$/.test(charset)) return text;
+  if (/[^\u0000-\u00FF]/.test(text)) return text;
+  const fixed = typeof Buffer === 'function'
+    ? Buffer.from(text, 'latin1').toString('utf8')
+    : decodeUtf8Bytes(text);
+  // Buffer cambia lo inválido por U+FFFD; el texto de entrada no puede traerlo (es latin1).
+  if (fixed === null || fixed.includes('\uFFFD')) return text;
+  return fixed;
+}
+
 function decodeEntities(value) {
   return String(value || '')
     .replace(/&nbsp;/gi, ' ')
@@ -134,8 +193,10 @@ function normalizeEmail(raw) {
     ? raw.body
     : (raw || {});
   const headers = headerMap(source);
-  const plain = String(source.textPlain || source.text || (typeof source.body === 'string' ? source.body : '') || '').trim();
-  const html = String(source.textHtml || (typeof source.html === 'string' ? source.html : '') || '').trim();
+  // Lo primero: los acentos. Todo lo demás (HTML, firma, citas) ya trabaja con texto bueno.
+  const charset = declaredCharset(headers);
+  const plain = repairMojibake(source.textPlain || source.text || (typeof source.body === 'string' ? source.body : '') || '', charset).trim();
+  const html = repairMojibake(source.textHtml || (typeof source.html === 'string' ? source.html : '') || '', charset).trim();
   let body = plain || htmlToText(html);
   body = body.replace(/\r\n/g, '\n').replace(/ /g, ' ');
   body = cutQuotedChain(body);
@@ -161,4 +222,4 @@ function normalizeEmail(raw) {
   return { message_id: key.message_id, message_id_generated: key.message_id_generated, ...mail };
 }
 
-module.exports = { normalizeEmail, htmlToText, messageKey };
+module.exports = { normalizeEmail, htmlToText, messageKey, repairMojibake, decodeUtf8Bytes };

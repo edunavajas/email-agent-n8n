@@ -56,7 +56,8 @@ def build_reply(mail, sender, automatic):
     message["From"] = sender
     message["To"] = to
     message["Reply-To"] = sender
-    message["Subject"] = one_line(mail.get("subject")) or "Re: (sin asunto)"
+    # Asunto vacío: "Re:" a secas. Con "Re: (sin asunto)" Gmail abre otro hilo.
+    message["Subject"] = one_line(mail.get("subject")) or "Re:"
     message["Date"] = formatdate(usegmt=True)
     message["Message-ID"] = make_msgid(domain=sender.split("@", 1)[1])
     in_reply_to, references = thread_headers(mail.get("message_id"), mail.get("references"))

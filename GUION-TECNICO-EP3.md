@@ -112,17 +112,18 @@ Pregunta de control que hice: "integración con SAP". El mejor fragmento fue una
 
 ## 6. Telegram: aprobar, rechazar, editar
 
-**HACES:** manda el 02 y el 03. En el móvil tienen que verse remitente, asunto, categoría, confianza, borrador y fuentes. Tres botones: Aprobar, Rechazar, Editar.
+**HACES:** manda el 02 y el 03. En el móvil llega «📝 Borrador para aprobar»: remitente, asunto, categoría y confianza, por qué, el borrador en una cita y las fuentes. Tres botones: Aprobar, Rechazar, Editar.
 
-- Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo.
-- Rechazar no envía. La fila pasa a `rechazado`.
-- Editar pide un mensaje de respuesta. Hay que **responder** a ese mensaje (Telegram abre la respuesta solo). Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía. Un texto suelto no se envía a nadie.
-- Pulsa Aprobar dos veces delante de cámara: el segundo toque contesta "Ya se respondió" y no sale otro correo. Lo mismo con Aprobar después de Rechazar.
+- Aprobar llama al flujo 02 y el cliente recibe el borrador, en el mismo hilo. Los botones se van al momento («⏳ Aprobado. Enviando…») y, cuando sale el correo, el mensaje queda con «✅ Aprobado y enviado · 10:03» (hora de Madrid).
+- Rechazar no envía. La fila pasa a `rechazado` y el mensaje queda «❌ Rechazado · 10:05», sin botones.
+- Editar pide un mensaje de respuesta. Hay que **responder** a ese mensaje (Telegram abre la respuesta solo). Ese mensaje es otro update: lo coge el 03b, guarda el texto y entonces envía. Un texto suelto no se envía a nadie. Mientras, el borrador dice «✏️ Editando: responde al mensaje que te acabo de mandar»; cuando sale tu texto, «✅ Enviado con tu texto · 10:07».
+- Ya no hay segundo toque que enseñar: tras el primero, los botones desaparecen. Si tocas dos veces muy rápido, el segundo contesta "Ya está aprobado y en cola de envío" y no sale otro correo. Un botón de un mensaje viejo (ya respondido, rechazado o vencido) contesta con su aviso y deja el mensaje sin botones.
+- Si el SMTP falla, el mensaje dice «⚠️ Falló el envío: …» y llega otro aviso con Reintentar. Si el 03b no llega al 02, los botones vuelven al mensaje para pulsar Aprobar otra vez.
 - Solo vale tu chat (`telegram_chat_id`). Un botón desde otro chat no hace nada y queda apuntado como `telegram_ajeno`.
 
 **NO HE PULSADO NINGÚN BOTÓN.** No hay token de Telegram en el n8n del episodio. Los flujos están importados y parados.
 
-**SI FALLA:** "botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
+**SI FALLA:** si los botones no se van, abre la ejecución del 03b y mira «Quitar botones»: va con *Continue*, así que sale aunque Telegram diga que no ("message is not modified" = el mensaje ya tenía ese texto). "Botón que gira y no hace nada" = el 03b no está activo, o hay otro trigger del mismo bot, o `telegram_chat_id` no es tu chat (mira `mail_actions` con `action = 'telegram_ajeno'`). No rellenes *Restrict to Chat IDs* en el trigger: en 2.10.2 descarta los botones. "No encuentro la fila" = el `message_id` que guardó el 03a no es el del mensaje del botón. Mira la columna `telegram_message_id`.
 
 **CENSURA:** el token del bot si abres BotFather o `getUpdates`.
 
@@ -142,13 +143,14 @@ No reinicies un n8n de otro proyecto que viva en la misma máquina. Si reinicias
 
 Hazlos en este orden, que es el de la historia:
 
-1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva la referencia (#N), sin enlace a GitHub, y va en el hilo.
-2. **07** urgente. El Telegram del equipo sale antes del resumen. No esperes al día siguiente para enseñarlo.
+1. **04** bug detallado. Tiene que aparecer la issue en el repo vacío, con el asunto, el cuerpo con los datos de contacto tapados y una referencia interna. Sin remitente ni `mailto:`: el repo es público. El acuse lleva la referencia (#N), sin enlace a GitHub, y va en el hilo. En el móvil, «🐞 Bug registrado» con el número y el enlace de la issue (ese sí: es para ti).
+2. **07** urgente. Primero sale el acuse al cliente y, segundos después, «🚨 URGENTE» en el móvil, con el texto del correo y «📨 Ya le hemos mandado un acuse automático.». No espera al resumen. No esperes al día siguiente para enseñarlo.
 3. **08** spam. No hay respuesta. La fila está, estado `descartado`.
-4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
+4. **09** inyección. Léelo en voz alta. El sistema no dice que devuelve el dinero. En Telegram llega «🛑 Bloqueado: intenta dar órdenes», sin borrador y sin botón Aprobar: solo Rechazar o Editar. Lo único que puede salir es lo que escribas tú.
 5. **10** vacaciones. No sale correo. Estado `ignorado_autorespuesta`.
 6. **11** el hilo de quince respuestas. Enseña el cuerpo ya limpio: solo la pregunta del horario. `node scripts/check.js` lo comprueba; el cuerpo limpio queda por debajo de 500 caracteres y no contiene "respuesta citada número 15".
 7. Reenvía el **01** con el mismo Message-ID (`send.py --resend 01`). Segunda fila: no. En el log, `duplicado`. Esto sí lo he ejecutado en la base, con un id de prueba, y el segundo insert no creó fila. Con Gmail el reenvío puede no llegar (deduplica por Message-ID): entonces, `POST /webhook/mail-ingest` con el mismo `message_id`.
+8. **Freno anti-bucles.** Manda otra vez el **01**, con Message-ID nuevo (`send.py --only 01`), antes de que pase una hora. No sale solo: llega a Telegram con el borrador, los tres botones y «🔁 Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora». Aprobar lo envía, en el hilo. Todos los correos de prueba salen del mismo buzón cliente: cualquier segunda respuesta automática dentro de esa hora hace lo mismo. No es un fallo.
 
 **Issue de GitHub:** el nodo está en el flujo 04. No lo he disparado. No he creado una issue de prueba para no dejar basura antes de la toma. El repo de destino lo creas tú, vacío, delante de cámara o justo antes.
 
@@ -160,7 +162,7 @@ Hazlos en este orden, que es el de la historia:
 
 **HACES:** flujo 05, botón "Resumen ahora". No esperes a las 06:00 UTC.
 
-**EN PANTALLA:** un mensaje corto. Recibidos, respondidos solos, aprobados, rechazados, leads, issues, spam, urgentes, esperando, vencidas, borrados. Números, no un listado de cuerpos.
+**EN PANTALLA:** «📊 Resumen de ayer», corto, en cuatro bloques: Contestado, Pendiente de ti, Descartado y Problemas. Las líneas a 0 no salen, salvo «Esperando aprobación» y «Con error». La última línea dice si te toca algo: «✅ Nada pendiente de ti.» o «👉 Te toca: 2 por aprobar, 1 lead.». Números, no un listado de cuerpos.
 
 **TARDA:** la consulta, con la tabla vacía, es instantánea. No la he mandado a Telegram.
 
@@ -217,6 +219,10 @@ Sin maquillar. Sirve para contarlo.
 7. **Importar por `docker cp` a `/tmp` del contenedor** falla: el proceso es el usuario `node` y `/tmp` queda de root. Hay que dejar los JSON en `/home/node`.
 8. **Copiar el sqlite de n8n como root tira la instancia.** `SQLITE_READONLY` y bucle de arranque. Se arregla devolviendo el fichero al uid 1000. No lo hagas en cámara. No toqué el n8n del otro proyecto.
 9. **No hay buzón, ni bot, ni clave de modelo, ni token de issues en este entorno.** La decisión, el esquema, el RAG vivo y el reinicio sí. El correo saliendo al remitente y el dedo en el botón, no.
+10. **El freno anti-bucles retenía en silencio.** En la prueba con Gmail real, un cliente que preguntó dos cosas en una hora se quedó sin respuesta y sin aviso: la fila se quedaba en `retenido_bucle` y solo salía en el resumen del día siguiente. Ahora el freno sigue cortando el envío automático, pero el correo pasa al 03a y llega a Telegram con el borrador, los tres botones y el motivo.
+11. **`Re: (sin asunto)` rompe el hilo en Gmail.** A un correo sin asunto se le contestaba con `Re: (sin asunto)` y Gmail abría un hilo nuevo, con `In-Reply-To` y `References` correctos. Con `Re:` a secas lo mete en el mismo hilo. Ahora sale así.
+12. **Acentos rotos en el cuerpo con Gmail.** «El panel de producciÃ³n estÃ¡ caÃ­do» en la base, en Telegram, en la consulta al RAG y en la issue. El asunto, bien. Es el nodo IMAP de n8n 2.10.2 en formato simple: decodifica el quoted-printable sin mirar el charset y cada byte UTF-8 llega como un carácter latin1. Lo miré en el código de `@n8n/imap`, dentro de la imagen. Ahora `normalize.js` lo repara lo primero, solo cuando tiene pinta de eso y releído como UTF-8 es válido. No cambié al formato *resolved*: decodifica bien, pero baja siempre los adjuntos a la ejecución.
+13. **Los botones no se iban al pulsar.** Tras Aprobar, el mensaje seguía con los tres botones y no decía qué había pasado. Ahora se queda sin botones y con una línea: «✅ Aprobado y enviado · 10:03», «❌ Rechazado · 10:05»… Si esa edición falla, no se para nada.
 
 ---
 

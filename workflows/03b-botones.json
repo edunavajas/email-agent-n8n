@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "### 03b Botones\n\nTrigger de Telegram, no un Wait. Busca la fila por el message_id guardado en 03a.\n\nSolo vale el chat de `telegram_chat_id` (y, si lo rellenas, las personas de `telegram_user_ids`). Un botón o un texto de otro chat no hace nada y queda apuntado como `telegram_ajeno`.\n\nCada botón es un UPDATE ... WHERE status = 'esperando_aprobacion' (o edición, o error de envío): aprobar dos veces, aprobar tras rechazar o tras vencer no envía nada y el botón lo dice.\n\nEditar pide un texto. Hay que responder a ese mensaje: un texto suelto no se envía a nadie.",
+        "content": "### 03b Botones\n\nTrigger de Telegram, no un Wait. Busca la fila por el message_id guardado en 03a.\n\nSolo vale el chat de `telegram_chat_id` (y, si lo rellenas, las personas de `telegram_user_ids`). Un botón o un texto de otro chat no hace nada y queda apuntado como `telegram_ajeno`.\n\nCada botón es un UPDATE ... WHERE status = 'esperando_aprobacion' (o edición, o error de envío): aprobar dos veces, aprobar tras rechazar o tras vencer no envía nada y el botón lo dice.\n\nEditar pide un texto. Hay que responder a ese mensaje: un texto suelto no se envía a nadie.\n\nAl decidir, el mensaje pierde los botones y gana una línea con lo que pasó y la hora de Madrid (Quitar botones). Un botón viejo también lo deja sin botones. Si el 02 no recibe el envío, los botones vuelven (Devolver botones). Ninguna edición para el flujo si falla.",
         "height": 240,
         "width": 560,
         "color": 5
@@ -83,7 +83,7 @@
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// Botones y textos que llegan al bot. Solo cuenta lo que viene del chat del\n// dueño (telegram_chat_id). Si además hay telegram_user_ids, la persona que\n// pulsa tiene que estar en esa lista (útil si el chat es un grupo).\n// Ojo: el filtro \"Restrict to Chat IDs\" del trigger de Telegram no sirve aquí.\n// En n8n 2.10.2 mira message.chat.id, que un callback_query no trae, y\n// descartaría todos los botones.\n\nconst ACTIONS = ['approve', 'reject', 'edit'];\n\nfunction idList(value) {\n  return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);\n}\n\nfunction parseUpdate(update, config) {\n  const ownerChat = String(config.telegram_chat_id ?? '').trim();\n  const allowedUsers = idList(config.telegram_user_ids);\n  const base = { kind: 'ignore', data: '', callback_id: '', chat_id: '', from_id: '', message_id: '', text: '', reply_to: '' };\n  let item = base;\n\n  if (update && update.callback_query) {\n    const query = update.callback_query;\n    const message = query.message || {};\n    item = {\n      ...base,\n      kind: 'callback',\n      data: String(query.data || ''),\n      callback_id: String(query.id || ''),\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: query.from ? String(query.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n    };\n  } else if (update && update.message && typeof update.message.text === 'string') {\n    const message = update.message;\n    item = {\n      ...base,\n      kind: 'text',\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: message.from ? String(message.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      text: message.text.slice(0, 4000),\n      reply_to: message.reply_to_message ? String(message.reply_to_message.message_id) : '',\n    };\n  } else if (update && update.message) {\n    const message = update.message;\n    item = { ...base, chat_id: message.chat ? String(message.chat.id) : '', from_id: message.from ? String(message.from.id) : '' };\n  }\n\n  // Sin chat configurado (o con el valor de ejemplo) no se autoriza a nadie.\n  const configured = /^-?\\d+$/.test(ownerChat);\n  const chatOk = configured && item.chat_id === ownerChat;\n  const userOk = allowedUsers.length === 0 || allowedUsers.includes(item.from_id);\n  return { ...item, authorized: chatOk && userOk && item.kind !== 'ignore' };\n}\n\n// Qué hacer con un botón según lo que devolvió la transición en SQL.\n// row: { id, previous_status, injection_flag, has_final_reply, expired, claimed }\nfunction callbackOutcome(row, action) {\n  if (!ACTIONS.includes(action)) return { next: 'none', notice: 'Botón desconocido.' };\n  if (!row || !row.id) return { next: 'none', notice: 'Este mensaje ya no corresponde a ningún correo.' };\n  if (Number(row.claimed) > 0) {\n    if (action === 'approve') return { next: 'send', notice: 'Aprobado. Enviando la respuesta.' };\n    if (action === 'reject') return { next: 'reject', notice: 'Rechazado. No se envía nada.' };\n    return { next: 'edit', notice: 'Escribe el texto como respuesta al mensaje que te acabo de mandar.' };\n  }\n  const status = String(row.previous_status || '');\n  if (row.expired && ['esperando_aprobacion', 'esperando_edicion', 'error_envio'].includes(status)) {\n    return { next: 'none', notice: 'Venció el plazo de aprobación. No se envía nada.' };\n  }\n  if (action === 'approve' && row.injection_flag && !row.has_final_reply) {\n    return { next: 'none', notice: 'Este correo está bloqueado (intentó dar órdenes o prometía dinero). No se puede aprobar: usa Editar y escribe tú la respuesta.' };\n  }\n  const notices = {\n    aprobado: 'Ya está aprobado y en cola de envío.',\n    enviando: 'Ya se está enviando.',\n    respondido_auto: 'Ya se respondió. No se envía otra vez.',\n    respondido_manual: 'Ya se respondió. No se envía otra vez.',\n    rechazado: 'Ya estaba rechazado. No se envía nada.',\n    aprobacion_vencida: 'Venció el plazo de aprobación. No se envía nada.',\n    retenido_bucle: 'Retenido para no entrar en bucle. No se envía.',\n  };\n  return { next: 'none', notice: notices[status] || `No se puede hacer eso ahora (estado: ${status || 'desconocido'}).` };\n}\n\nreturn { json: parseUpdate($json, $('Configuración').first().json) };\n",
+        "jsCode": "'use strict';\n\n// Botones y textos que llegan al bot. Solo cuenta lo que viene del chat del\n// dueño (telegram_chat_id). Si además hay telegram_user_ids, la persona que\n// pulsa tiene que estar en esa lista (útil si el chat es un grupo).\n// Ojo: el filtro \"Restrict to Chat IDs\" del trigger de Telegram no sirve aquí.\n// En n8n 2.10.2 mira message.chat.id, que un callback_query no trae, y\n// descartaría todos los botones.\n\nconst ACTIONS = ['approve', 'reject', 'edit'];\n\nfunction idList(value) {\n  return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);\n}\n\nfunction parseUpdate(update, config) {\n  const ownerChat = String(config.telegram_chat_id ?? '').trim();\n  const allowedUsers = idList(config.telegram_user_ids);\n  const base = { kind: 'ignore', data: '', callback_id: '', chat_id: '', from_id: '', message_id: '', text: '', reply_to: '', message_text: '' };\n  let item = base;\n\n  if (update && update.callback_query) {\n    const query = update.callback_query;\n    const message = query.message || {};\n    item = {\n      ...base,\n      kind: 'callback',\n      data: String(query.data || ''),\n      callback_id: String(query.id || ''),\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: query.from ? String(query.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      // Texto del mensaje del botón, sin formato. Solo sirve si ya no hay fila.\n      message_text: typeof message.text === 'string' ? message.text.slice(0, 4000) : '',\n    };\n  } else if (update && update.message && typeof update.message.text === 'string') {\n    const message = update.message;\n    item = {\n      ...base,\n      kind: 'text',\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: message.from ? String(message.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      text: message.text.slice(0, 4000),\n      reply_to: message.reply_to_message ? String(message.reply_to_message.message_id) : '',\n    };\n  } else if (update && update.message) {\n    const message = update.message;\n    item = { ...base, chat_id: message.chat ? String(message.chat.id) : '', from_id: message.from ? String(message.from.id) : '' };\n  }\n\n  // Sin chat configurado (o con el valor de ejemplo) no se autoriza a nadie.\n  const configured = /^-?\\d+$/.test(ownerChat);\n  const chatOk = configured && item.chat_id === ownerChat;\n  const userOk = allowedUsers.length === 0 || allowedUsers.includes(item.from_id);\n  return { ...item, authorized: chatOk && userOk && item.kind !== 'ignore' };\n}\n\n// Qué hacer con un botón según lo que devolvió la transición en SQL.\n// row: { id, previous_status, injection_flag, has_final_reply, expired, claimed }\n// result: clave de la línea que se añade al mensaje (format.js, resultLine) al\n// quitarle los botones. Vacía = el mensaje no se toca: la fila aún admite el\n// botón o hay otra ejecución con ella (esa edita el mensaje). timed: con hora.\nconst STALE_RESULTS = {\n  respondido_auto: 'ya_respondido',\n  respondido_manual: 'ya_respondido',\n  rechazado: 'ya_rechazado',\n  aprobacion_vencida: 'vencido',\n  retenido_bucle: 'retenido',\n};\nconst IN_FLIGHT = ['avisando', 'esperando_aprobacion', 'esperando_edicion', 'error_envio', 'aprobado', 'enviando'];\n\nfunction callbackOutcome(row, action) {\n  const outcome = (next, notice, result = '', timed = false) => ({ next, notice, result, timed });\n  if (!ACTIONS.includes(action)) return outcome('none', 'Botón desconocido.');\n  if (!row || !row.id) return outcome('none', 'Este mensaje ya no corresponde a ningún correo.', 'sin_fila');\n  if (Number(row.claimed) > 0) {\n    if (action === 'approve') return outcome('send', 'Aprobado. Enviando la respuesta.', 'enviando', true);\n    if (action === 'reject') return outcome('reject', 'Rechazado. No se envía nada.', 'rechazado', true);\n    return outcome('edit', 'Escribe el texto como respuesta al mensaje que te acabo de mandar.', 'editando');\n  }\n  const status = String(row.previous_status || '');\n  if (row.expired && ['esperando_aprobacion', 'esperando_edicion', 'error_envio'].includes(status)) {\n    return outcome('none', 'Venció el plazo de aprobación. No se envía nada.', 'vencido');\n  }\n  if (action === 'approve' && row.injection_flag && !row.has_final_reply) {\n    // Rechazar y Editar siguen valiendo: el mensaje se queda con sus botones.\n    return outcome('none', 'Este correo está bloqueado (intentó dar órdenes o prometía dinero). No se puede aprobar: usa Editar y escribe tú la respuesta.');\n  }\n  const notices = {\n    aprobado: 'Ya está aprobado y en cola de envío.',\n    enviando: 'Ya se está enviando.',\n    respondido_auto: 'Ya se respondió. No se envía otra vez.',\n    respondido_manual: 'Ya se respondió. No se envía otra vez.',\n    rechazado: 'Ya estaba rechazado. No se envía nada.',\n    aprobacion_vencida: 'Venció el plazo de aprobación. No se envía nada.',\n    // Una fila retenida tiene botones cuando el 03a la pasa a esperando_aprobacion.\n    // Si un botón la encuentra aún aquí, es que no llegó a aprobación.\n    retenido_bucle: 'Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',\n  };\n  const notice = notices[status] || `No se puede hacer eso ahora (estado: ${status || 'desconocido'}).`;\n  if (IN_FLIGHT.includes(status)) return outcome('none', notice);\n  \n  return outcome('none', notice, STALE_RESULTS[status] || 'otro');\n}\n\nreturn { json: parseUpdate($json, $('Configuración').first().json) };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "7989038c-6233-574f-921a-85c61a2e10fc",
@@ -226,7 +226,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH target AS (\n  SELECT id, status, injection_flag, COALESCE(final_reply, '') <> '' AS has_final_reply,\n         (approval_due_at IS NOT NULL AND approval_due_at <= now()) AS expired\n  FROM mail_messages\n  WHERE telegram_chat_id = $1 AND telegram_message_id = $2\n), expire AS (\n  UPDATE mail_messages m SET status = 'aprobacion_vencida'\n  FROM target t\n  WHERE m.id = t.id AND t.expired AND m.status IN ('esperando_aprobacion', 'esperando_edicion')\n  RETURNING m.id\n), claimed AS (\n  UPDATE mail_messages m\n  SET status = CASE $3::text WHEN 'approve' THEN 'aprobado' WHEN 'reject' THEN 'rechazado' ELSE 'esperando_edicion' END\n  FROM target t\n  WHERE m.id = t.id\n    AND $3::text IN ('approve', 'reject', 'edit')\n    AND NOT t.expired\n    AND m.status IN ('esperando_aprobacion', 'esperando_edicion', 'error_envio')\n    AND NOT ($3::text = 'approve' AND m.injection_flag AND COALESCE(m.final_reply, '') = '')\n  RETURNING m.id\n), log AS (\n  INSERT INTO mail_actions (mail_id, action, detail)\n  SELECT id, 'boton', jsonb_build_object('boton', $3::text, 'aplicado', (SELECT count(*) FROM claimed) > 0, 'estado_previo', status)\n  FROM target\n  RETURNING id\n)\nSELECT t.id::text AS id, t.status AS previous_status, COALESCE(t.injection_flag, false) AS injection_flag,\n       COALESCE(t.has_final_reply, false) AS has_final_reply, COALESCE(t.expired, false) AS expired,\n       (SELECT count(*) FROM claimed)::int AS claimed\nFROM (SELECT 1) AS one LEFT JOIN target t ON true",
+        "query": "WITH target AS (\n  SELECT m.id, m.status, m.injection_flag, COALESCE(m.final_reply, '') <> '' AS has_final_reply,\n         (m.approval_due_at IS NOT NULL AND m.approval_due_at <= now()) AS expired,\n         m.from_address, m.from_name, m.subject, m.category, m.confidence, m.draft_reply, m.reasoning,\n         m.rag_sources, m.sensitive_flag, m.telegram_chat_id, m.telegram_message_id,\n         EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = m.id AND a.action = 'pedido_aprobacion'\n               AND a.detail->>'telegram_message_id' = m.telegram_message_id) AS on_approval_message,\n       EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = m.id AND a.action = 'retenido_bucle') AS loop_hold,\n       (SELECT a.detail->>'error' FROM mail_actions a WHERE a.mail_id = m.id AND a.action = 'error_envio'\n         ORDER BY a.id DESC LIMIT 1) AS last_send_error\n  FROM mail_messages m\n  WHERE m.telegram_chat_id = $1 AND m.telegram_message_id = $2\n), expire AS (\n  UPDATE mail_messages m SET status = 'aprobacion_vencida'\n  FROM target t\n  WHERE m.id = t.id AND t.expired AND m.status IN ('esperando_aprobacion', 'esperando_edicion')\n  RETURNING m.id\n), claimed AS (\n  UPDATE mail_messages m\n  SET status = CASE $3::text WHEN 'approve' THEN 'aprobado' WHEN 'reject' THEN 'rechazado' ELSE 'esperando_edicion' END\n  FROM target t\n  WHERE m.id = t.id\n    AND $3::text IN ('approve', 'reject', 'edit')\n    AND NOT t.expired\n    AND m.status IN ('esperando_aprobacion', 'esperando_edicion', 'error_envio')\n    AND NOT ($3::text = 'approve' AND m.injection_flag AND COALESCE(m.final_reply, '') = '')\n  RETURNING m.id\n), log AS (\n  INSERT INTO mail_actions (mail_id, action, detail)\n  SELECT id, 'boton', jsonb_build_object('boton', $3::text, 'aplicado', (SELECT count(*) FROM claimed) > 0, 'estado_previo', status)\n  FROM target\n  RETURNING id\n)\nSELECT t.id::text AS id, t.status AS previous_status, COALESCE(t.injection_flag, false) AS injection_flag,\n       COALESCE(t.has_final_reply, false) AS has_final_reply, COALESCE(t.expired, false) AS expired,\n       (SELECT count(*) FROM claimed)::int AS claimed,\n       t.from_address, t.from_name, t.subject, t.category, t.confidence, t.draft_reply, t.reasoning, t.rag_sources,\n       COALESCE(t.sensitive_flag, false) AS sensitive_flag, t.telegram_chat_id, t.telegram_message_id,\n       COALESCE(t.on_approval_message, true) AS on_approval_message, COALESCE(t.loop_hold, false) AS loop_hold,\n       t.last_send_error\nFROM (SELECT 1) AS one LEFT JOIN target t ON true",
         "options": {
           "queryBatching": "independently",
           "queryReplacement": "={{ [$json.chat_id, $json.message_id, $json.data] }}"
@@ -246,14 +246,14 @@
           "name": "PostgreSQL"
         }
       },
-      "notes": "Transición atómica. Si la fila ya no está en un estado que admita el botón, claimed = 0 y no se hace nada.",
+      "notes": "Transición atómica. Si la fila ya no está en un estado que admita el botón, claimed = 0 y no se hace nada. Trae también lo necesario para rehacer el mensaje sin botones.",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// Botones y textos que llegan al bot. Solo cuenta lo que viene del chat del\n// dueño (telegram_chat_id). Si además hay telegram_user_ids, la persona que\n// pulsa tiene que estar en esa lista (útil si el chat es un grupo).\n// Ojo: el filtro \"Restrict to Chat IDs\" del trigger de Telegram no sirve aquí.\n// En n8n 2.10.2 mira message.chat.id, que un callback_query no trae, y\n// descartaría todos los botones.\n\nconst ACTIONS = ['approve', 'reject', 'edit'];\n\nfunction idList(value) {\n  return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);\n}\n\nfunction parseUpdate(update, config) {\n  const ownerChat = String(config.telegram_chat_id ?? '').trim();\n  const allowedUsers = idList(config.telegram_user_ids);\n  const base = { kind: 'ignore', data: '', callback_id: '', chat_id: '', from_id: '', message_id: '', text: '', reply_to: '' };\n  let item = base;\n\n  if (update && update.callback_query) {\n    const query = update.callback_query;\n    const message = query.message || {};\n    item = {\n      ...base,\n      kind: 'callback',\n      data: String(query.data || ''),\n      callback_id: String(query.id || ''),\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: query.from ? String(query.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n    };\n  } else if (update && update.message && typeof update.message.text === 'string') {\n    const message = update.message;\n    item = {\n      ...base,\n      kind: 'text',\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: message.from ? String(message.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      text: message.text.slice(0, 4000),\n      reply_to: message.reply_to_message ? String(message.reply_to_message.message_id) : '',\n    };\n  } else if (update && update.message) {\n    const message = update.message;\n    item = { ...base, chat_id: message.chat ? String(message.chat.id) : '', from_id: message.from ? String(message.from.id) : '' };\n  }\n\n  // Sin chat configurado (o con el valor de ejemplo) no se autoriza a nadie.\n  const configured = /^-?\\d+$/.test(ownerChat);\n  const chatOk = configured && item.chat_id === ownerChat;\n  const userOk = allowedUsers.length === 0 || allowedUsers.includes(item.from_id);\n  return { ...item, authorized: chatOk && userOk && item.kind !== 'ignore' };\n}\n\n// Qué hacer con un botón según lo que devolvió la transición en SQL.\n// row: { id, previous_status, injection_flag, has_final_reply, expired, claimed }\nfunction callbackOutcome(row, action) {\n  if (!ACTIONS.includes(action)) return { next: 'none', notice: 'Botón desconocido.' };\n  if (!row || !row.id) return { next: 'none', notice: 'Este mensaje ya no corresponde a ningún correo.' };\n  if (Number(row.claimed) > 0) {\n    if (action === 'approve') return { next: 'send', notice: 'Aprobado. Enviando la respuesta.' };\n    if (action === 'reject') return { next: 'reject', notice: 'Rechazado. No se envía nada.' };\n    return { next: 'edit', notice: 'Escribe el texto como respuesta al mensaje que te acabo de mandar.' };\n  }\n  const status = String(row.previous_status || '');\n  if (row.expired && ['esperando_aprobacion', 'esperando_edicion', 'error_envio'].includes(status)) {\n    return { next: 'none', notice: 'Venció el plazo de aprobación. No se envía nada.' };\n  }\n  if (action === 'approve' && row.injection_flag && !row.has_final_reply) {\n    return { next: 'none', notice: 'Este correo está bloqueado (intentó dar órdenes o prometía dinero). No se puede aprobar: usa Editar y escribe tú la respuesta.' };\n  }\n  const notices = {\n    aprobado: 'Ya está aprobado y en cola de envío.',\n    enviando: 'Ya se está enviando.',\n    respondido_auto: 'Ya se respondió. No se envía otra vez.',\n    respondido_manual: 'Ya se respondió. No se envía otra vez.',\n    rechazado: 'Ya estaba rechazado. No se envía nada.',\n    aprobacion_vencida: 'Venció el plazo de aprobación. No se envía nada.',\n    retenido_bucle: 'Retenido para no entrar en bucle. No se envía.',\n  };\n  return { next: 'none', notice: notices[status] || `No se puede hacer eso ahora (estado: ${status || 'desconocido'}).` };\n}\n\nconst update = $('Leer update').item.json;\nconst outcome = callbackOutcome($json, update.data);\nreturn { json: { ...update, id: $json.id || null, ...outcome } };\n",
+        "jsCode": "'use strict';\n\n// Botones y textos que llegan al bot. Solo cuenta lo que viene del chat del\n// dueño (telegram_chat_id). Si además hay telegram_user_ids, la persona que\n// pulsa tiene que estar en esa lista (útil si el chat es un grupo).\n// Ojo: el filtro \"Restrict to Chat IDs\" del trigger de Telegram no sirve aquí.\n// En n8n 2.10.2 mira message.chat.id, que un callback_query no trae, y\n// descartaría todos los botones.\n\nconst ACTIONS = ['approve', 'reject', 'edit'];\n\nfunction idList(value) {\n  return String(value ?? '').split(',').map((item) => item.trim()).filter(Boolean);\n}\n\nfunction parseUpdate(update, config) {\n  const ownerChat = String(config.telegram_chat_id ?? '').trim();\n  const allowedUsers = idList(config.telegram_user_ids);\n  const base = { kind: 'ignore', data: '', callback_id: '', chat_id: '', from_id: '', message_id: '', text: '', reply_to: '', message_text: '' };\n  let item = base;\n\n  if (update && update.callback_query) {\n    const query = update.callback_query;\n    const message = query.message || {};\n    item = {\n      ...base,\n      kind: 'callback',\n      data: String(query.data || ''),\n      callback_id: String(query.id || ''),\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: query.from ? String(query.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      // Texto del mensaje del botón, sin formato. Solo sirve si ya no hay fila.\n      message_text: typeof message.text === 'string' ? message.text.slice(0, 4000) : '',\n    };\n  } else if (update && update.message && typeof update.message.text === 'string') {\n    const message = update.message;\n    item = {\n      ...base,\n      kind: 'text',\n      chat_id: message.chat ? String(message.chat.id) : '',\n      from_id: message.from ? String(message.from.id) : '',\n      message_id: message.message_id !== undefined ? String(message.message_id) : '',\n      text: message.text.slice(0, 4000),\n      reply_to: message.reply_to_message ? String(message.reply_to_message.message_id) : '',\n    };\n  } else if (update && update.message) {\n    const message = update.message;\n    item = { ...base, chat_id: message.chat ? String(message.chat.id) : '', from_id: message.from ? String(message.from.id) : '' };\n  }\n\n  // Sin chat configurado (o con el valor de ejemplo) no se autoriza a nadie.\n  const configured = /^-?\\d+$/.test(ownerChat);\n  const chatOk = configured && item.chat_id === ownerChat;\n  const userOk = allowedUsers.length === 0 || allowedUsers.includes(item.from_id);\n  return { ...item, authorized: chatOk && userOk && item.kind !== 'ignore' };\n}\n\n// Qué hacer con un botón según lo que devolvió la transición en SQL.\n// row: { id, previous_status, injection_flag, has_final_reply, expired, claimed }\n// result: clave de la línea que se añade al mensaje (format.js, resultLine) al\n// quitarle los botones. Vacía = el mensaje no se toca: la fila aún admite el\n// botón o hay otra ejecución con ella (esa edita el mensaje). timed: con hora.\nconst STALE_RESULTS = {\n  respondido_auto: 'ya_respondido',\n  respondido_manual: 'ya_respondido',\n  rechazado: 'ya_rechazado',\n  aprobacion_vencida: 'vencido',\n  retenido_bucle: 'retenido',\n};\nconst IN_FLIGHT = ['avisando', 'esperando_aprobacion', 'esperando_edicion', 'error_envio', 'aprobado', 'enviando'];\n\nfunction callbackOutcome(row, action) {\n  const outcome = (next, notice, result = '', timed = false) => ({ next, notice, result, timed });\n  if (!ACTIONS.includes(action)) return outcome('none', 'Botón desconocido.');\n  if (!row || !row.id) return outcome('none', 'Este mensaje ya no corresponde a ningún correo.', 'sin_fila');\n  if (Number(row.claimed) > 0) {\n    if (action === 'approve') return outcome('send', 'Aprobado. Enviando la respuesta.', 'enviando', true);\n    if (action === 'reject') return outcome('reject', 'Rechazado. No se envía nada.', 'rechazado', true);\n    return outcome('edit', 'Escribe el texto como respuesta al mensaje que te acabo de mandar.', 'editando');\n  }\n  const status = String(row.previous_status || '');\n  if (row.expired && ['esperando_aprobacion', 'esperando_edicion', 'error_envio'].includes(status)) {\n    return outcome('none', 'Venció el plazo de aprobación. No se envía nada.', 'vencido');\n  }\n  if (action === 'approve' && row.injection_flag && !row.has_final_reply) {\n    // Rechazar y Editar siguen valiendo: el mensaje se queda con sus botones.\n    return outcome('none', 'Este correo está bloqueado (intentó dar órdenes o prometía dinero). No se puede aprobar: usa Editar y escribe tú la respuesta.');\n  }\n  const notices = {\n    aprobado: 'Ya está aprobado y en cola de envío.',\n    enviando: 'Ya se está enviando.',\n    respondido_auto: 'Ya se respondió. No se envía otra vez.',\n    respondido_manual: 'Ya se respondió. No se envía otra vez.',\n    rechazado: 'Ya estaba rechazado. No se envía nada.',\n    aprobacion_vencida: 'Venció el plazo de aprobación. No se envía nada.',\n    // Una fila retenida tiene botones cuando el 03a la pasa a esperando_aprobacion.\n    // Si un botón la encuentra aún aquí, es que no llegó a aprobación.\n    retenido_bucle: 'Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',\n  };\n  const notice = notices[status] || `No se puede hacer eso ahora (estado: ${status || 'desconocido'}).`;\n  if (IN_FLIGHT.includes(status)) return outcome('none', notice);\n  \n  return outcome('none', notice, STALE_RESULTS[status] || 'otro');\n}\n\n'use strict';\n\n// Textos que salen a Telegram y asuntos de respuesta. Todo lo que viene del\n// correo se escapa: el mensaje va con parse_mode HTML.\n// Forma de todos los avisos: emoji y título en negrita, campos \"Etiqueta: valor\"\n// uno por línea, bloques separados por una línea en blanco.\n\n// Telegram corta en 4096. Los avisos se quedan en 3600 para que quepa la línea\n// de resultado que se añade al pulsar un botón (withResult).\nconst TELEGRAM_MAX = 4096;\nconst MESSAGE_MAX = 3600;\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction escapeAttr(value) {\n  return escapeHtml(value).replace(/\"/g, '&quot;');\n}\n\n// Recorta sin dejar medio emoji (un surrogate suelto lo rechaza Telegram).\nfunction cut(value, max) {\n  const text = String(value ?? '');\n  if (text.length <= max) return text;\n  let end = Math.max(0, max);\n  const code = text.charCodeAt(end - 1);\n  if (code >= 0xD800 && code <= 0xDBFF) end -= 1;\n  return text.slice(0, end);\n}\n\nfunction quote(text) {\n  return `<blockquote>${text}</blockquote>`;\n}\n\n// parts: líneas ya escapadas y, como mucho, un bloque largo\n// { raw, limit, render(textoEscapado, recortado) }. Si no cabe, se recorta solo\n// ese bloque (el cuerpo o el borrador). Cabecera y pie salen siempre enteros.\nfunction fit(parts, max = MESSAGE_MAX) {\n  const long = parts.find((part) => typeof part !== 'string');\n  const render = (raw, trimmed) => parts\n    .map((part) => (typeof part === 'string' ? part : part.render(escapeHtml(raw), trimmed)))\n    .join('\\n');\n  if (!long) return render('', false);\n  let raw = String(long.raw ?? '');\n  let trimmed = false;\n  if (long.limit && raw.length > long.limit) {\n    raw = cut(raw, long.limit).trimEnd() + ' […]';\n    trimmed = true;\n  }\n  const full = render(raw, trimmed);\n  if (full.length <= max) return full;\n  let keep = raw.length - (full.length - max) - 20;\n  while (keep > 0) {\n    const out = render(cut(raw, keep).trimEnd() + ' […]', true);\n    if (out.length <= max) return out;\n    keep -= Math.max(10, out.length - max);\n  }\n  return render('[…]', true);\n}\n\n// En Telegram un asunto vacío se lee mejor así. El correo que sale no lo lleva.\nfunction shownSubject(subject) {\n  return String(subject || '').trim() || '(sin asunto)';\n}\n\nfunction fromLine(row) {\n  const name = cut(String(row.from_name || '').trim(), 120);\n  return `De: ${name ? escapeHtml(name) + ' ' : ''}&lt;${escapeHtml(cut(String(row.from_address || ''), 200))}&gt;`;\n}\n\nfunction subjectLine(row) {\n  return `Asunto: ${escapeHtml(cut(shownSubject(row.subject), 200))}`;\n}\n\nconst CATEGORY_LABELS = {\n  consulta_frecuente: 'consulta frecuente',\n  revision: 'revisión',\n  bug: 'bug',\n  incidencia_urgente: 'incidencia urgente',\n  lead: 'lead',\n  spam: 'spam',\n};\n\nfunction categoryLabel(category) {\n  return CATEGORY_LABELS[category] || String(category || 'sin categoría');\n}\n\nfunction formatSources(sources) {\n  const list = Array.isArray(sources) ? sources.slice(0, 3) : [];\n  if (!list.length) return 'Sin fragmentos en la base de conocimiento.';\n  return list.map((source) => {\n    const title = cut(String(source.title || 'Documento'), 120);\n    const when = source.updated_at ? ` (${String(source.updated_at).slice(0, 10)})` : '';\n    const url = cut(String(source.canonical_url || source.url || ''), 200);\n    return `• ${title}${when}${url ? `\\n  ${url}` : ''}`;\n  }).join('\\n');\n}\n\nconst LOOP_HOLD_TEXT = 'Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.';\nconst SENSITIVE_TEXT = 'Tema sensible: habla de precio, plazo, devolución o datos personales. Hace falta una persona.';\n\n// El título dice por qué está bloqueado. decide.js empieza el razonamiento así.\nfunction blockedTitle(reasoning) {\n  const text = String(reasoning || '');\n  if (/^El borrador prometía una devolución/.test(text)) return 'Bloqueado: el borrador prometía dinero';\n  if (/^El borrador repetía instrucciones internas/.test(text)) return 'Bloqueado: el borrador repetía instrucciones internas';\n  return 'Bloqueado: intenta dar órdenes';\n}\n\n// Fila de mail_messages -> campos de approvalMessage. La usan el 03a al mandar\n// el aviso y el 02/03b al rehacerlo para quitarle los botones: sale igual.\nfunction approvalFromRow(row) {\n  let sources = row.rag_sources;\n  if (typeof sources === 'string') {\n    try { sources = JSON.parse(sources); } catch { sources = []; }\n  }\n  return {\n    from_address: row.from_address,\n    from_name: row.from_name,\n    subject: row.subject,\n    category: row.category,\n    confidence: row.confidence,\n    draft_reply: row.draft_reply,\n    reasoning: row.reasoning,\n    sources: Array.isArray(sources) ? sources : [],\n    injection: row.injection_flag === true,\n    sensitive: row.sensitive_flag === true,\n    loop_hold: row.loop_hold === true,\n  };\n}\n\nfunction approvalMessage(row) {\n  const blocked = Boolean(row.injection);\n  const parts = blocked\n    ? [`🛑 <b>${blockedTitle(row.reasoning)}</b>`, fromLine(row), subjectLine(row)]\n    : [\n      '📝 <b>Borrador para aprobar</b>',\n      fromLine(row),\n      subjectLine(row),\n      `Categoría: ${escapeHtml(categoryLabel(row.category))} · confianza ${Math.round(Number(row.confidence || 0) * 100)} %`,\n    ];\n  const warnings = [];\n  // El 02 no lo mandó solo: esa dirección ya recibió una respuesta automática hace poco.\n  if (row.loop_hold) warnings.push('🔁 ' + LOOP_HOLD_TEXT);\n  if (row.sensitive) warnings.push('⚠️ ' + SENSITIVE_TEXT);\n  if (warnings.length) parts.push('', ...warnings);\n  if (row.reasoning) parts.push('', `Por qué: ${escapeHtml(cut(String(row.reasoning).trim(), 300))}`);\n  if (!blocked) {\n    const draft = String(row.draft_reply || '').trim();\n    parts.push('', '<b>Borrador</b>');\n    parts.push(draft\n      ? { raw: draft, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortado para Telegram. El correo sale entero.</i>' : '') }\n      : '(vacío: escribe tú la respuesta con Editar)');\n  }\n  parts.push('', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));\n  // Bloqueado = sin borrador. Lo que vea el remitente lo escribe una persona.\n  if (blocked) parts.push('', 'Sin borrador y sin botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');\n  return fit(parts);\n}\n\n// Aviso cuando algo falla. Corto y sin el cuerpo del correo.\nfunction failureMessage(what, row, error) {\n  const parts = [`⚠️ <b>Fallo: ${escapeHtml(cut(String(what), 200))}</b>`];\n  if (row && row.from_address) parts.push(`De: ${escapeHtml(cut(String(row.from_address), 200))}`);\n  if (row && row.subject) parts.push(`Asunto: ${escapeHtml(cut(String(row.subject), 200))}`);\n  if (row && row.id) parts.push(`Fila: <code>${escapeHtml(row.id)}</code>`);\n  parts.push(`Error: <code>${escapeHtml(cut(String(error || 'sin detalle'), 500))}</code>`);\n  if (row && row.hint) parts.push('', `<b>Qué hacer:</b> ${escapeHtml(cut(String(row.hint), 1200))}`);\n  return fit(parts);\n}\n\nconst SEND_FAILURE_HINT = 'Queda en error_envio. Reintentar lo manda otra vez (tu texto si lo editaste). Si nadie pulsa, vence como una aprobación.';\n\n// El aviso del 02 cuando el SMTP falla. Lleva Reintentar, Rechazar y Editar.\nfunction sendFailureMessage(row, error) {\n  return failureMessage('no se pudo enviar la respuesta', { ...row, hint: SEND_FAILURE_HINT }, error);\n}\n\n// Aviso de lead: llega al móvil al momento. Sin botones: no se contesta solo.\nfunction leadMessage(row) {\n  const parts = ['💼 <b>Lead nuevo</b>', fromLine(row), subjectLine(row)];\n  if (row.reasoning) parts.push(`Motivo: ${escapeHtml(cut(String(row.reasoning).trim(), 300))}`);\n  const draft = String(row.draft_reply || '').trim();\n  parts.push('', '<b>Respuesta sugerida (no enviada)</b>');\n  parts.push(draft\n    ? { raw: draft, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortada para Telegram.</i>' : '') }\n    : '(sin borrador)');\n  parts.push('', 'No se ha contestado: escríbele tú.');\n  return fit(parts);\n}\n\nfunction ackLine(ack, ref) {\n  if (!ack || typeof ack.sent !== 'boolean') return [];\n  if (ack.sent) return ['', ref ? `📨 Acuse enviado al cliente con la referencia ${ref}.` : '📨 Ya le hemos mandado un acuse automático.'];\n  const error = escapeHtml(cut(String(ack.error || 'sin detalle').replace(/\\s+/g, ' ').trim(), 200));\n  return ['', `⚠️ El acuse automático no salió: ${error}. Escríbele tú${ref ? ` con la referencia ${ref}` : ''}.`];\n}\n\n// Urgente: el texto del correo a la vista y si el cliente ya tiene acuse.\nfunction urgentMessage(row, ack) {\n  const body = String(row.body_normalized || '').trim();\n  const parts = ['🚨 <b>URGENTE</b>', fromLine(row), subjectLine(row), ''];\n  parts.push(body\n    ? { raw: body, limit: 1500, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortado. El correo entero está en el buzón.</i>' : '') }\n    : '(sin texto)');\n  parts.push(...ackLine(ack, ''));\n  return fit(parts);\n}\n\n// Bug: la issue ya existe. Es un aviso interno: aquí sí va el enlace.\nfunction bugMessage(row, ack) {\n  const number = Number(row.issue_number);\n  const ref = Number.isInteger(number) && number > 0 ? `#${number}` : '';\n  const url = String(row.issue_url || '');\n  const shown = ref || 'sin número';\n  const issue = /^https:\\/\\/[^\\s\"<>]+$/.test(url) ? `<a href=\"${escapeAttr(url)}\">${shown}</a>` : shown;\n  const parts = ['🐞 <b>Bug registrado</b>', fromLine(row), `Issue: ${issue}`];\n  if (row.issue_title) parts.push(`Título: ${escapeHtml(cut(String(row.issue_title), 200))}`);\n  parts.push(...ackLine(ack, ref));\n  return fit(parts);\n}\n\n// Resumen diario. Secciones; las líneas a 0 no salen, salvo las importantes.\nfunction summaryMessage(counts) {\n  const n = (key) => Number(counts[key] || 0);\n  const section = (title, rows) => {\n    const shown = rows.filter(([, value, always]) => always || value > 0);\n    return shown.length ? ['', `<b>${title}</b>`, ...shown.map(([label, value]) => `${label}: ${value}`)] : [];\n  };\n  const lines = [\n    '📊 <b>Resumen de ayer</b>',\n    `Recibidos: ${n('received')} (últimas 24 h)`,\n    ...section('Contestado', [\n      ['Solos', n('auto_replied')],\n      ['Aprobados por ti', n('approved')],\n      ['Bugs con issue', n('issues')],\n      ['Urgentes avisados', n('urgent')],\n    ]),\n    ...section('Pendiente de ti', [\n      ['Esperando aprobación', n('waiting'), true],\n      ['Leads por contestar', n('leads')],\n    ]),\n    ...section('Descartado', [\n      ['Rechazados por ti', n('rejected')],\n      ['Spam', n('spam')],\n      ['Autorespuestas ignoradas', n('ignored')],\n    ]),\n    ...section('Problemas', [\n      ['Con error (míralos)', n('errors'), true],\n      ['Atascados más de 1 h', n('stuck')],\n      ['Aprobaciones vencidas', n('expired')],\n      ['Retenidos por bucle', n('held')],\n    ]),\n  ];\n  if (n('purged')) lines.push('', `Borrados por retención: ${n('purged')}`);\n  const plural = (value, one, many) => `${value} ${value === 1 ? one : many}`;\n  const todo = [\n    n('waiting') ? `${n('waiting')} por aprobar` : '',\n    n('leads') ? plural(n('leads'), 'lead', 'leads') : '',\n    n('errors') ? `${n('errors')} con error` : '',\n    n('stuck') ? plural(n('stuck'), 'atascado', 'atascados') : '',\n    n('expired') ? plural(n('expired'), 'vencida', 'vencidas') : '',\n  ].filter(Boolean);\n  lines.push('', todo.length ? `👉 Te toca: ${todo.join(', ')}.` : '✅ Nada pendiente de ti.');\n  return lines.join('\\n');\n}\n\n// Hora de Madrid sin depender de ICU: UTC+1, y UTC+2 desde el último domingo\n// de marzo hasta el último de octubre (a la 01:00 UTC, regla de la UE).\nfunction lastSundayUtc(year, month) {\n  const last = new Date(Date.UTC(year, month + 1, 0));\n  return last.getUTCDate() - last.getUTCDay();\n}\n\nfunction madridTime(date) {\n  const when = new Date(date === undefined ? Date.now() : date);\n  const year = when.getUTCFullYear();\n  const summerStart = Date.UTC(year, 2, lastSundayUtc(year, 2), 1);\n  const summerEnd = Date.UTC(year, 9, lastSundayUtc(year, 9), 1);\n  const offset = when.getTime() >= summerStart && when.getTime() < summerEnd ? 2 : 1;\n  const local = new Date(when.getTime() + offset * 3600000);\n  return String(local.getUTCHours()).padStart(2, '0') + ':' + String(local.getUTCMinutes()).padStart(2, '0');\n}\n\n// Línea que se añade al mensaje con botones cuando se decide. telegram.js dice\n// qué pasó (la clave); aquí está cómo se lee.\nconst RESULTS = {\n  enviando: '⏳ Aprobado. Enviando…',\n  enviado: '✅ Aprobado y enviado',\n  enviado_editado: '✅ Enviado con tu texto',\n  rechazado: '❌ Rechazado',\n  editando: '✏️ Editando: responde al mensaje que te acabo de mandar',\n  fallo_envio: '⚠️ Falló el envío',\n  fallo_02: '⚠️ Falló el envío: el flujo 02 no recibió la petición',\n  ya_respondido: '✅ Ya estaba respondido. No se envía otra vez.',\n  ya_rechazado: '❌ Ya estaba rechazado. No se envía nada.',\n  vencido: '⌛ Venció el plazo de aprobación. No se envía nada.',\n  retenido: '🔁 Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',\n  sin_fila: 'ℹ️ Este mensaje ya no corresponde a ningún correo.',\n  otro: 'ℹ️ Este botón ya no hace nada.',\n};\nconst RESULT_TAILS = {\n  fallo_envio: 'Tienes Reintentar en el aviso de abajo.',\n  fallo_02: 'Pulsa Aprobar otra vez cuando esté.',\n};\n\nfunction resultLine(kind, options = {}) {\n  let line = RESULTS[kind] || RESULTS.otro;\n  if (options.detail) line += ': ' + escapeHtml(cut(String(options.detail).replace(/\\s+/g, ' ').trim(), 200));\n  if (options.when) line += ' · ' + options.when;\n  const tail = options.tail || RESULT_TAILS[kind];\n  return tail ? `${line}. ${tail}` : line;\n}\n\nfunction withResult(base, line) {\n  return cut(`${base}\\n\\n${line}`, TELEGRAM_MAX);\n}\n\n// Texto que tiene ahora el mensaje con botones de esa fila: el del 03a o, si el\n// 02 mandó después un aviso de fallo (y la fila apunta a él), ese aviso.\n// on_approval_message y last_send_error salen de mail_actions (ver la SQL).\nfunction currentMessage(row) {\n  if (row.on_approval_message === false && row.last_send_error) return sendFailureMessage(row, row.last_send_error);\n  return approvalMessage(approvalFromRow(row));\n}\n\n// Un botón de un mensaje que ya no tiene fila: se rehace con el texto plano que\n// trae el propio botón (Telegram lo manda sin formato).\nfunction plainMessage(text) {\n  return escapeHtml(cut(String(text || '').trim(), 3000));\n}\n\n// Asunto del correo que sale. Si el del cliente venía vacío, \"Re:\" a secas:\n// con \"Re: (sin asunto)\" Gmail abre otro hilo aunque In-Reply-To y References\n// estén bien. Probado con Gmail real.\nfunction replySubject(subject) {\n  const clean = String(subject || '').replace(/[\\r\\n]+/g, ' ').trim();\n  if (!clean) return 'Re:';\n  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;\n}\n\nconst update = $('Leer update').item.json;\nconst outcome = callbackOutcome($json, update.data);\n// El texto se rehace desde la fila (con formato). Sin fila, el que trae el botón.\nconst base = $json.id ? currentMessage($json) : plainMessage(update.message_text);\nconst line = outcome.result ? resultLine(outcome.result, { when: outcome.timed ? madridTime(new Date()) : '' }) : '';\nconst edit = line !== '' && base !== '';\nreturn { json: { ...update, id: $json.id || null, ...outcome, edit, edit_text: edit ? withResult(base, line) : '' } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "8381a3fe-b236-5d86-a34e-4cece2ac9162",
@@ -263,7 +263,8 @@
       "position": [
         1580,
         180
-      ]
+      ],
+      "notes": "Qué hace el botón y cómo queda el mensaje: sin botones y con una línea («✅ Aprobado y enviado · 10:03», «❌ Rechazado · 10:05»...)."
     },
     {
       "parameters": {
@@ -303,6 +304,72 @@
           },
           "conditions": [
             {
+              "leftValue": "={{ $('Qué hacer').item.json.edit && $('Qué hacer').item.json.next !== 'edit' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6c0fd861-c0a4-543c-9899-549cf109b2a3",
+      "name": "¿Quitar botones?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2020,
+        180
+      ],
+      "notes": "Aprobar, Rechazar y botones viejos. Editar los quita cuando ya ha salido la petición de texto. Las dos salidas siguen."
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": "={{ $('Qué hacer').item.json.chat_id }}",
+        "messageId": "={{ $('Qué hacer').item.json.message_id }}",
+        "text": "={{ $('Qué hacer').item.json.edit_text }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {},
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "8e855711-074c-5eed-b795-6f85f4570460",
+      "name": "Quitar botones",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2240,
+        80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": "Telegram"
+        }
+      },
+      "notes": "Mismo texto, sin botones y con lo que pasó. Va antes de llamar al 02: la línea final («✅ Aprobado y enviado») la pone el 02 al enviar.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
               "leftValue": "={{ $('Qué hacer').item.json.next }}",
               "rightValue": "send",
               "operator": {
@@ -320,7 +387,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2020,
+        2460,
         180
       ]
     },
@@ -347,7 +414,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2240,
+        2680,
         60
       ],
       "credentials": {
@@ -372,7 +439,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2480,
+        2920,
         60
       ]
     },
@@ -404,7 +471,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2240,
+        2680,
         260
       ]
     },
@@ -422,7 +489,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        2480,
+        2920,
         260
       ],
       "credentials": {
@@ -463,7 +530,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2480,
+        2920,
         400
       ]
     },
@@ -472,7 +539,7 @@
         "resource": "message",
         "operation": "sendMessage",
         "chatId": "={{ $('Qué hacer').item.json.chat_id }}",
-        "text": "Responde a este mensaje con el texto corregido. Eso es lo que se enviará.",
+        "text": "✏️ Responde a este mensaje con el texto corregido. Eso es lo que se enviará.",
         "replyMarkup": "forceReply",
         "additionalFields": {
           "parse_mode": "HTML",
@@ -489,7 +556,7 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        2700,
+        3140,
         400
       ],
       "credentials": {
@@ -515,7 +582,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        2920,
+        3360,
         400
       ],
       "credentials": {
@@ -527,6 +594,72 @@
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "eda8513b-9b3f-576b-ad9b-5763fe0c6afc",
+      "name": "¿Texto pedido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3580,
+        400
+      ],
+      "notes": "Solo si salió la petición de texto. Si no, el mensaje conserva sus botones y puedes pulsar Editar otra vez."
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": "={{ $('Qué hacer').item.json.chat_id }}",
+        "messageId": "={{ $('Qué hacer').item.json.message_id }}",
+        "text": "={{ $('Qué hacer').item.json.edit_text }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {},
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "770e33a6-c56d-545c-a8ea-46c8b6246c49",
+      "name": "Quitar botones al editar",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3800,
+        400
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": "Telegram"
+        }
+      },
+      "notes": "«✏️ Editando: responde al mensaje que te acabo de mandar».",
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -583,7 +716,7 @@
           "name": "PostgreSQL"
         }
       },
-      "notes": "Solo vale un texto que responde al mensaje 'Responde a este mensaje...'. esperando_edicion -> aprobado.",
+      "notes": "Solo vale un texto que responde al mensaje 'Responde a este mensaje...'. esperando_edicion -> aprobado. El 02 marca el mensaje «✅ Enviado con tu texto».",
       "retryOnFail": true,
       "maxTries": 3,
       "waitBetweenTries": 2000
@@ -677,7 +810,7 @@
         "resource": "message",
         "operation": "sendMessage",
         "chatId": "={{ $('Leer update').item.json.chat_id }}",
-        "text": "Ese texto no responde a ninguna edición pendiente y no se envía a nadie. Para corregir un borrador, pulsa Editar y contesta al mensaje que te mando.",
+        "text": "ℹ️ Ese texto no responde a ninguna edición pendiente y no se envía a nadie. Para corregir un borrador, pulsa Editar y contesta al mensaje que te mando.",
         "replyMarkup": "none",
         "additionalFields": {
           "parse_mode": "HTML",
@@ -704,7 +837,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "WITH upd AS (\n  UPDATE mail_messages SET status = 'esperando_aprobacion'\n  WHERE id = $1::uuid AND status = 'aprobado'\n  RETURNING id, from_address, subject\n), log AS (\n  INSERT INTO mail_actions (mail_id, action, detail)\n  VALUES ($1::uuid, 'error_llamada_02', jsonb_build_object('error', $2::text))\n  RETURNING id\n)\nSELECT u.id::text AS id, u.from_address, u.subject, $2::text AS fallo\nFROM (SELECT 1) AS one LEFT JOIN upd u ON true",
+        "query": "WITH upd AS (\n  UPDATE mail_messages SET status = 'esperando_aprobacion'\n  WHERE id = $1::uuid AND status = 'aprobado'\n  RETURNING id, from_address, from_name, subject, category, confidence, draft_reply, reasoning, rag_sources,\n            injection_flag, sensitive_flag, telegram_chat_id, telegram_message_id\n), log AS (\n  INSERT INTO mail_actions (mail_id, action, detail)\n  VALUES ($1::uuid, 'error_llamada_02', jsonb_build_object('error', $2::text))\n  RETURNING id\n)\nSELECT u.id::text AS id, u.from_address, u.from_name, u.subject, u.category, u.confidence, u.draft_reply,\n       u.reasoning, u.rag_sources, COALESCE(u.injection_flag, false) AS injection_flag,\n       COALESCE(u.sensitive_flag, false) AS sensitive_flag, u.telegram_chat_id, u.telegram_message_id,\n       EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = u.id AND a.action = 'pedido_aprobacion'\n               AND a.detail->>'telegram_message_id' = u.telegram_message_id) AS on_approval_message,\n       EXISTS (SELECT 1 FROM mail_actions a WHERE a.mail_id = u.id AND a.action = 'retenido_bucle') AS loop_hold,\n       (SELECT a.detail->>'error' FROM mail_actions a WHERE a.mail_id = u.id AND a.action = 'error_envio'\n         ORDER BY a.id DESC LIMIT 1) AS last_send_error,\n       $2::text AS fallo\nFROM (SELECT 1) AS one LEFT JOIN upd u ON true",
         "options": {
           "queryBatching": "independently",
           "queryReplacement": "={{ [$json.id, $json.fallo] }}"
@@ -715,7 +848,7 @@
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.5,
       "position": [
-        2700,
+        3140,
         60
       ],
       "credentials": {
@@ -731,7 +864,7 @@
     },
     {
       "parameters": {
-        "jsCode": "'use strict';\n\n// Textos que salen a Telegram y asuntos de respuesta. Todo lo que viene del\n// correo se escapa: el mensaje va con parse_mode HTML.\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction formatSources(sources) {\n  const list = Array.isArray(sources) ? sources.slice(0, 3) : [];\n  if (!list.length) return 'Sin fragmentos en la base de conocimiento.';\n  return list.map((source) => {\n    const title = source.title || 'Documento';\n    const when = source.updated_at ? ` (${String(source.updated_at).slice(0, 10)})` : '';\n    const url = source.canonical_url || source.url || '';\n    return `• ${title}${when}${url ? `\\n  ${url}` : ''}`;\n  }).join('\\n');\n}\n\nfunction approvalMessage(row) {\n  const confidence = Math.round(Number(row.confidence || 0) * 100);\n  const draft = String(row.draft_reply || '').slice(0, 900);\n  const lines = [\n    '<b>Correo para revisar</b>',\n    `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,\n    `Asunto: ${escapeHtml(row.subject)}`,\n    `Categoría: ${escapeHtml(row.category)}`,\n    `Confianza: ${confidence}%`,\n  ];\n  if (row.injection) {\n    lines.push('Aviso: bloqueado. El correo intentó dar instrucciones al sistema o el borrador prometía algo que la base no dice. No hay botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');\n  }\n  if (row.sensitive) lines.push('Aviso: habla de precio, plazo, devolución o datos personales. Hace falta una persona.');\n  if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);\n  lines.push('', '<b>Borrador</b>', escapeHtml(draft || (row.injection ? '(sin borrador: bloqueado)' : '(vacío)')), '', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));\n  return lines.join('\\n').slice(0, 3900);\n}\n\n// Aviso cuando algo falla. Corto y sin el cuerpo del correo.\nfunction failureMessage(what, row, error) {\n  const lines = [\n    `<b>Fallo: ${escapeHtml(what)}</b>`,\n    row && row.from_address ? `De: ${escapeHtml(row.from_address)}` : '',\n    row && row.subject ? `Asunto: ${escapeHtml(String(row.subject).slice(0, 200))}` : '',\n    row && row.id ? `Fila: <code>${escapeHtml(row.id)}</code>` : '',\n    `Error: ${escapeHtml(String(error || 'sin detalle').slice(0, 500))}`,\n  ];\n  if (row && row.hint) lines.push('', escapeHtml(row.hint));\n  return lines.filter((line) => line !== '').join('\\n').slice(0, 3900);\n}\n\n// Aviso de lead: llega al móvil al momento. Sin botones: no se contesta solo.\nfunction leadMessage(row) {\n  const draft = String(row.draft_reply || '').trim().slice(0, 900);\n  const lines = [\n    '<b>Lead nuevo</b>',\n    `De: ${escapeHtml(row.from_name ? `${row.from_name} ` : '')}&lt;${escapeHtml(row.from_address)}&gt;`,\n    `Asunto: ${escapeHtml(String(row.subject || '').slice(0, 200))}`,\n  ];\n  if (row.reasoning) lines.push(`Motivo: ${escapeHtml(String(row.reasoning).slice(0, 300))}`);\n  lines.push('', '<b>Respuesta sugerida (no enviada)</b>', escapeHtml(draft || '(sin borrador)'), '', 'No se ha contestado: escríbele tú.');\n  return lines.join('\\n').slice(0, 3900);\n}\n\nfunction summaryMessage(counts) {\n  const n = (key) => Number(counts[key] || 0);\n  const lines = [\n    '<b>Resumen del correo (últimas 24 h)</b>',\n    `Recibidos: ${n('received')}`,\n    `Respondidos solos: ${n('auto_replied')}`,\n    `Aprobados a mano: ${n('approved')}`,\n    `Rechazados: ${n('rejected')}`,\n    `Leads: ${n('leads')}`,\n    `Issues: ${n('issues')}`,\n    `Spam registrado: ${n('spam')}`,\n    `Urgentes: ${n('urgent')}`,\n    `Autorespuestas ignoradas: ${n('ignored')}`,\n    `Retenidos por bucle: ${n('held')}`,\n    `Esperando aprobación: ${n('waiting')}`,\n    `Aprobaciones vencidas: ${n('expired')}`,\n    `Con error (míralos): ${n('errors')}`,\n    `Atascados más de 1 h: ${n('stuck')}`,\n    `Borrados por retención: ${n('purged')}`,\n  ];\n  return lines.join('\\n');\n}\n\nfunction replySubject(subject) {\n  const clean = String(subject || '').replace(/[\\r\\n]+/g, ' ').trim() || '(sin asunto)';\n  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;\n}\n\nconst config = $('Configuración').first().json;\nconst hint = 'No se ha enviado. ¿Está activo el flujo 02? ¿n8n_url y Mail API Key cuadran? Cuando esté, pulsa Aprobar otra vez: si editaste, sale tu texto.';\nreturn { json: { chat_id: config.telegram_chat_id, text: failureMessage('el flujo 02 no recibió el envío', { ...$json, hint }, $json.fallo) } };\n",
+        "jsCode": "'use strict';\n\n// Textos que salen a Telegram y asuntos de respuesta. Todo lo que viene del\n// correo se escapa: el mensaje va con parse_mode HTML.\n// Forma de todos los avisos: emoji y título en negrita, campos \"Etiqueta: valor\"\n// uno por línea, bloques separados por una línea en blanco.\n\n// Telegram corta en 4096. Los avisos se quedan en 3600 para que quepa la línea\n// de resultado que se añade al pulsar un botón (withResult).\nconst TELEGRAM_MAX = 4096;\nconst MESSAGE_MAX = 3600;\n\nfunction escapeHtml(value) {\n  return String(value ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\nfunction escapeAttr(value) {\n  return escapeHtml(value).replace(/\"/g, '&quot;');\n}\n\n// Recorta sin dejar medio emoji (un surrogate suelto lo rechaza Telegram).\nfunction cut(value, max) {\n  const text = String(value ?? '');\n  if (text.length <= max) return text;\n  let end = Math.max(0, max);\n  const code = text.charCodeAt(end - 1);\n  if (code >= 0xD800 && code <= 0xDBFF) end -= 1;\n  return text.slice(0, end);\n}\n\nfunction quote(text) {\n  return `<blockquote>${text}</blockquote>`;\n}\n\n// parts: líneas ya escapadas y, como mucho, un bloque largo\n// { raw, limit, render(textoEscapado, recortado) }. Si no cabe, se recorta solo\n// ese bloque (el cuerpo o el borrador). Cabecera y pie salen siempre enteros.\nfunction fit(parts, max = MESSAGE_MAX) {\n  const long = parts.find((part) => typeof part !== 'string');\n  const render = (raw, trimmed) => parts\n    .map((part) => (typeof part === 'string' ? part : part.render(escapeHtml(raw), trimmed)))\n    .join('\\n');\n  if (!long) return render('', false);\n  let raw = String(long.raw ?? '');\n  let trimmed = false;\n  if (long.limit && raw.length > long.limit) {\n    raw = cut(raw, long.limit).trimEnd() + ' […]';\n    trimmed = true;\n  }\n  const full = render(raw, trimmed);\n  if (full.length <= max) return full;\n  let keep = raw.length - (full.length - max) - 20;\n  while (keep > 0) {\n    const out = render(cut(raw, keep).trimEnd() + ' […]', true);\n    if (out.length <= max) return out;\n    keep -= Math.max(10, out.length - max);\n  }\n  return render('[…]', true);\n}\n\n// En Telegram un asunto vacío se lee mejor así. El correo que sale no lo lleva.\nfunction shownSubject(subject) {\n  return String(subject || '').trim() || '(sin asunto)';\n}\n\nfunction fromLine(row) {\n  const name = cut(String(row.from_name || '').trim(), 120);\n  return `De: ${name ? escapeHtml(name) + ' ' : ''}&lt;${escapeHtml(cut(String(row.from_address || ''), 200))}&gt;`;\n}\n\nfunction subjectLine(row) {\n  return `Asunto: ${escapeHtml(cut(shownSubject(row.subject), 200))}`;\n}\n\nconst CATEGORY_LABELS = {\n  consulta_frecuente: 'consulta frecuente',\n  revision: 'revisión',\n  bug: 'bug',\n  incidencia_urgente: 'incidencia urgente',\n  lead: 'lead',\n  spam: 'spam',\n};\n\nfunction categoryLabel(category) {\n  return CATEGORY_LABELS[category] || String(category || 'sin categoría');\n}\n\nfunction formatSources(sources) {\n  const list = Array.isArray(sources) ? sources.slice(0, 3) : [];\n  if (!list.length) return 'Sin fragmentos en la base de conocimiento.';\n  return list.map((source) => {\n    const title = cut(String(source.title || 'Documento'), 120);\n    const when = source.updated_at ? ` (${String(source.updated_at).slice(0, 10)})` : '';\n    const url = cut(String(source.canonical_url || source.url || ''), 200);\n    return `• ${title}${when}${url ? `\\n  ${url}` : ''}`;\n  }).join('\\n');\n}\n\nconst LOOP_HOLD_TEXT = 'Retenido por el freno anti-bucles: a esta dirección ya se le contestó automáticamente hace menos de una hora. Revísalo antes de enviar.';\nconst SENSITIVE_TEXT = 'Tema sensible: habla de precio, plazo, devolución o datos personales. Hace falta una persona.';\n\n// El título dice por qué está bloqueado. decide.js empieza el razonamiento así.\nfunction blockedTitle(reasoning) {\n  const text = String(reasoning || '');\n  if (/^El borrador prometía una devolución/.test(text)) return 'Bloqueado: el borrador prometía dinero';\n  if (/^El borrador repetía instrucciones internas/.test(text)) return 'Bloqueado: el borrador repetía instrucciones internas';\n  return 'Bloqueado: intenta dar órdenes';\n}\n\n// Fila de mail_messages -> campos de approvalMessage. La usan el 03a al mandar\n// el aviso y el 02/03b al rehacerlo para quitarle los botones: sale igual.\nfunction approvalFromRow(row) {\n  let sources = row.rag_sources;\n  if (typeof sources === 'string') {\n    try { sources = JSON.parse(sources); } catch { sources = []; }\n  }\n  return {\n    from_address: row.from_address,\n    from_name: row.from_name,\n    subject: row.subject,\n    category: row.category,\n    confidence: row.confidence,\n    draft_reply: row.draft_reply,\n    reasoning: row.reasoning,\n    sources: Array.isArray(sources) ? sources : [],\n    injection: row.injection_flag === true,\n    sensitive: row.sensitive_flag === true,\n    loop_hold: row.loop_hold === true,\n  };\n}\n\nfunction approvalMessage(row) {\n  const blocked = Boolean(row.injection);\n  const parts = blocked\n    ? [`🛑 <b>${blockedTitle(row.reasoning)}</b>`, fromLine(row), subjectLine(row)]\n    : [\n      '📝 <b>Borrador para aprobar</b>',\n      fromLine(row),\n      subjectLine(row),\n      `Categoría: ${escapeHtml(categoryLabel(row.category))} · confianza ${Math.round(Number(row.confidence || 0) * 100)} %`,\n    ];\n  const warnings = [];\n  // El 02 no lo mandó solo: esa dirección ya recibió una respuesta automática hace poco.\n  if (row.loop_hold) warnings.push('🔁 ' + LOOP_HOLD_TEXT);\n  if (row.sensitive) warnings.push('⚠️ ' + SENSITIVE_TEXT);\n  if (warnings.length) parts.push('', ...warnings);\n  if (row.reasoning) parts.push('', `Por qué: ${escapeHtml(cut(String(row.reasoning).trim(), 300))}`);\n  if (!blocked) {\n    const draft = String(row.draft_reply || '').trim();\n    parts.push('', '<b>Borrador</b>');\n    parts.push(draft\n      ? { raw: draft, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortado para Telegram. El correo sale entero.</i>' : '') }\n      : '(vacío: escribe tú la respuesta con Editar)');\n  }\n  parts.push('', '<b>Fuentes</b>', escapeHtml(formatSources(row.sources)));\n  // Bloqueado = sin borrador. Lo que vea el remitente lo escribe una persona.\n  if (blocked) parts.push('', 'Sin borrador y sin botón Aprobar: escribe tú la respuesta con Editar, o Rechazar.');\n  return fit(parts);\n}\n\n// Aviso cuando algo falla. Corto y sin el cuerpo del correo.\nfunction failureMessage(what, row, error) {\n  const parts = [`⚠️ <b>Fallo: ${escapeHtml(cut(String(what), 200))}</b>`];\n  if (row && row.from_address) parts.push(`De: ${escapeHtml(cut(String(row.from_address), 200))}`);\n  if (row && row.subject) parts.push(`Asunto: ${escapeHtml(cut(String(row.subject), 200))}`);\n  if (row && row.id) parts.push(`Fila: <code>${escapeHtml(row.id)}</code>`);\n  parts.push(`Error: <code>${escapeHtml(cut(String(error || 'sin detalle'), 500))}</code>`);\n  if (row && row.hint) parts.push('', `<b>Qué hacer:</b> ${escapeHtml(cut(String(row.hint), 1200))}`);\n  return fit(parts);\n}\n\nconst SEND_FAILURE_HINT = 'Queda en error_envio. Reintentar lo manda otra vez (tu texto si lo editaste). Si nadie pulsa, vence como una aprobación.';\n\n// El aviso del 02 cuando el SMTP falla. Lleva Reintentar, Rechazar y Editar.\nfunction sendFailureMessage(row, error) {\n  return failureMessage('no se pudo enviar la respuesta', { ...row, hint: SEND_FAILURE_HINT }, error);\n}\n\n// Aviso de lead: llega al móvil al momento. Sin botones: no se contesta solo.\nfunction leadMessage(row) {\n  const parts = ['💼 <b>Lead nuevo</b>', fromLine(row), subjectLine(row)];\n  if (row.reasoning) parts.push(`Motivo: ${escapeHtml(cut(String(row.reasoning).trim(), 300))}`);\n  const draft = String(row.draft_reply || '').trim();\n  parts.push('', '<b>Respuesta sugerida (no enviada)</b>');\n  parts.push(draft\n    ? { raw: draft, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortada para Telegram.</i>' : '') }\n    : '(sin borrador)');\n  parts.push('', 'No se ha contestado: escríbele tú.');\n  return fit(parts);\n}\n\nfunction ackLine(ack, ref) {\n  if (!ack || typeof ack.sent !== 'boolean') return [];\n  if (ack.sent) return ['', ref ? `📨 Acuse enviado al cliente con la referencia ${ref}.` : '📨 Ya le hemos mandado un acuse automático.'];\n  const error = escapeHtml(cut(String(ack.error || 'sin detalle').replace(/\\s+/g, ' ').trim(), 200));\n  return ['', `⚠️ El acuse automático no salió: ${error}. Escríbele tú${ref ? ` con la referencia ${ref}` : ''}.`];\n}\n\n// Urgente: el texto del correo a la vista y si el cliente ya tiene acuse.\nfunction urgentMessage(row, ack) {\n  const body = String(row.body_normalized || '').trim();\n  const parts = ['🚨 <b>URGENTE</b>', fromLine(row), subjectLine(row), ''];\n  parts.push(body\n    ? { raw: body, limit: 1500, render: (text, trimmed) => quote(text) + (trimmed ? '\\n<i>Recortado. El correo entero está en el buzón.</i>' : '') }\n    : '(sin texto)');\n  parts.push(...ackLine(ack, ''));\n  return fit(parts);\n}\n\n// Bug: la issue ya existe. Es un aviso interno: aquí sí va el enlace.\nfunction bugMessage(row, ack) {\n  const number = Number(row.issue_number);\n  const ref = Number.isInteger(number) && number > 0 ? `#${number}` : '';\n  const url = String(row.issue_url || '');\n  const shown = ref || 'sin número';\n  const issue = /^https:\\/\\/[^\\s\"<>]+$/.test(url) ? `<a href=\"${escapeAttr(url)}\">${shown}</a>` : shown;\n  const parts = ['🐞 <b>Bug registrado</b>', fromLine(row), `Issue: ${issue}`];\n  if (row.issue_title) parts.push(`Título: ${escapeHtml(cut(String(row.issue_title), 200))}`);\n  parts.push(...ackLine(ack, ref));\n  return fit(parts);\n}\n\n// Resumen diario. Secciones; las líneas a 0 no salen, salvo las importantes.\nfunction summaryMessage(counts) {\n  const n = (key) => Number(counts[key] || 0);\n  const section = (title, rows) => {\n    const shown = rows.filter(([, value, always]) => always || value > 0);\n    return shown.length ? ['', `<b>${title}</b>`, ...shown.map(([label, value]) => `${label}: ${value}`)] : [];\n  };\n  const lines = [\n    '📊 <b>Resumen de ayer</b>',\n    `Recibidos: ${n('received')} (últimas 24 h)`,\n    ...section('Contestado', [\n      ['Solos', n('auto_replied')],\n      ['Aprobados por ti', n('approved')],\n      ['Bugs con issue', n('issues')],\n      ['Urgentes avisados', n('urgent')],\n    ]),\n    ...section('Pendiente de ti', [\n      ['Esperando aprobación', n('waiting'), true],\n      ['Leads por contestar', n('leads')],\n    ]),\n    ...section('Descartado', [\n      ['Rechazados por ti', n('rejected')],\n      ['Spam', n('spam')],\n      ['Autorespuestas ignoradas', n('ignored')],\n    ]),\n    ...section('Problemas', [\n      ['Con error (míralos)', n('errors'), true],\n      ['Atascados más de 1 h', n('stuck')],\n      ['Aprobaciones vencidas', n('expired')],\n      ['Retenidos por bucle', n('held')],\n    ]),\n  ];\n  if (n('purged')) lines.push('', `Borrados por retención: ${n('purged')}`);\n  const plural = (value, one, many) => `${value} ${value === 1 ? one : many}`;\n  const todo = [\n    n('waiting') ? `${n('waiting')} por aprobar` : '',\n    n('leads') ? plural(n('leads'), 'lead', 'leads') : '',\n    n('errors') ? `${n('errors')} con error` : '',\n    n('stuck') ? plural(n('stuck'), 'atascado', 'atascados') : '',\n    n('expired') ? plural(n('expired'), 'vencida', 'vencidas') : '',\n  ].filter(Boolean);\n  lines.push('', todo.length ? `👉 Te toca: ${todo.join(', ')}.` : '✅ Nada pendiente de ti.');\n  return lines.join('\\n');\n}\n\n// Hora de Madrid sin depender de ICU: UTC+1, y UTC+2 desde el último domingo\n// de marzo hasta el último de octubre (a la 01:00 UTC, regla de la UE).\nfunction lastSundayUtc(year, month) {\n  const last = new Date(Date.UTC(year, month + 1, 0));\n  return last.getUTCDate() - last.getUTCDay();\n}\n\nfunction madridTime(date) {\n  const when = new Date(date === undefined ? Date.now() : date);\n  const year = when.getUTCFullYear();\n  const summerStart = Date.UTC(year, 2, lastSundayUtc(year, 2), 1);\n  const summerEnd = Date.UTC(year, 9, lastSundayUtc(year, 9), 1);\n  const offset = when.getTime() >= summerStart && when.getTime() < summerEnd ? 2 : 1;\n  const local = new Date(when.getTime() + offset * 3600000);\n  return String(local.getUTCHours()).padStart(2, '0') + ':' + String(local.getUTCMinutes()).padStart(2, '0');\n}\n\n// Línea que se añade al mensaje con botones cuando se decide. telegram.js dice\n// qué pasó (la clave); aquí está cómo se lee.\nconst RESULTS = {\n  enviando: '⏳ Aprobado. Enviando…',\n  enviado: '✅ Aprobado y enviado',\n  enviado_editado: '✅ Enviado con tu texto',\n  rechazado: '❌ Rechazado',\n  editando: '✏️ Editando: responde al mensaje que te acabo de mandar',\n  fallo_envio: '⚠️ Falló el envío',\n  fallo_02: '⚠️ Falló el envío: el flujo 02 no recibió la petición',\n  ya_respondido: '✅ Ya estaba respondido. No se envía otra vez.',\n  ya_rechazado: '❌ Ya estaba rechazado. No se envía nada.',\n  vencido: '⌛ Venció el plazo de aprobación. No se envía nada.',\n  retenido: '🔁 Retenido por el freno anti-bucles y aún sin pasar a aprobación. Este botón no envía nada.',\n  sin_fila: 'ℹ️ Este mensaje ya no corresponde a ningún correo.',\n  otro: 'ℹ️ Este botón ya no hace nada.',\n};\nconst RESULT_TAILS = {\n  fallo_envio: 'Tienes Reintentar en el aviso de abajo.',\n  fallo_02: 'Pulsa Aprobar otra vez cuando esté.',\n};\n\nfunction resultLine(kind, options = {}) {\n  let line = RESULTS[kind] || RESULTS.otro;\n  if (options.detail) line += ': ' + escapeHtml(cut(String(options.detail).replace(/\\s+/g, ' ').trim(), 200));\n  if (options.when) line += ' · ' + options.when;\n  const tail = options.tail || RESULT_TAILS[kind];\n  return tail ? `${line}. ${tail}` : line;\n}\n\nfunction withResult(base, line) {\n  return cut(`${base}\\n\\n${line}`, TELEGRAM_MAX);\n}\n\n// Texto que tiene ahora el mensaje con botones de esa fila: el del 03a o, si el\n// 02 mandó después un aviso de fallo (y la fila apunta a él), ese aviso.\n// on_approval_message y last_send_error salen de mail_actions (ver la SQL).\nfunction currentMessage(row) {\n  if (row.on_approval_message === false && row.last_send_error) return sendFailureMessage(row, row.last_send_error);\n  return approvalMessage(approvalFromRow(row));\n}\n\n// Un botón de un mensaje que ya no tiene fila: se rehace con el texto plano que\n// trae el propio botón (Telegram lo manda sin formato).\nfunction plainMessage(text) {\n  return escapeHtml(cut(String(text || '').trim(), 3000));\n}\n\n// Asunto del correo que sale. Si el del cliente venía vacío, \"Re:\" a secas:\n// con \"Re: (sin asunto)\" Gmail abre otro hilo aunque In-Reply-To y References\n// estén bien. Probado con Gmail real.\nfunction replySubject(subject) {\n  const clean = String(subject || '').replace(/[\\r\\n]+/g, ' ').trim();\n  if (!clean) return 'Re:';\n  return /^re:/i.test(clean) ? clean : `Re: ${clean}`;\n}\n\nconst config = $('Configuración').first().json;\nconst hint = 'No se ha enviado. ¿Está activo el flujo 02? ¿n8n_url y Mail API Key cuadran? Cuando esté, pulsa Aprobar otra vez: si editaste, sale tu texto.';\n// La fila vuelve a esperar: el mensaje que pulsaste recupera sus botones.\nconst restore = Boolean($json.id) && String($json.telegram_chat_id || '') !== '' && String($json.telegram_message_id || '') !== '';\nconst label = $json.on_approval_message === false && $json.last_send_error ? 'Reintentar' : 'Aprobar';\nconst restoreText = restore ? withResult(currentMessage($json), resultLine('fallo_02', { when: madridTime(new Date()), tail: 'Pulsa ' + label + ' otra vez cuando esté.' })) : '';\nreturn { json: { chat_id: config.telegram_chat_id, text: failureMessage('el flujo 02 no recibió el envío', { ...$json, hint }, $json.fallo), restore, restore_chat_id: $json.telegram_chat_id || '', restore_message_id: $json.telegram_message_id || '', restore_text: restoreText, approve_label: label } };\n",
         "mode": "runOnceForEachItem"
       },
       "id": "c9832676-a4a4-5e79-aee3-413bcdf8a18a",
@@ -739,16 +872,109 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2920,
+        3360,
         60
       ]
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.restore }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e264f5ce-51f9-53cf-be5f-8b90947b59ac",
+      "name": "¿Devolver botones?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3580,
+        60
+      ],
+      "notes": "Solo si la fila volvió a esperando_aprobacion. Las dos salidas siguen a Avisar fallo."
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": "={{ $('Texto fallo').item.json.restore_chat_id }}",
+        "messageId": "={{ $('Texto fallo').item.json.restore_message_id }}",
+        "text": "={{ $('Texto fallo').item.json.restore_text }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "={{ $('Texto fallo').item.json.approve_label }}",
+                    "additionalFields": {
+                      "callback_data": "approve"
+                    }
+                  },
+                  {
+                    "text": "Rechazar",
+                    "additionalFields": {
+                      "callback_data": "reject"
+                    }
+                  },
+                  {
+                    "text": "Editar",
+                    "additionalFields": {
+                      "callback_data": "edit"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "19560d12-a6dd-5719-b588-216e189394fd",
+      "name": "Devolver botones",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        3800,
+        -60
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": null,
+          "name": "Telegram"
+        }
+      },
+      "notes": "El mensaje vuelve a tener Aprobar (o Reintentar), Rechazar y Editar, con «⚠️ Falló el envío».",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
         "resource": "message",
         "operation": "sendMessage",
-        "chatId": "={{ $json.chat_id }}",
-        "text": "={{ $json.text }}",
+        "chatId": "={{ $('Texto fallo').item.json.chat_id }}",
+        "text": "={{ $('Texto fallo').item.json.text }}",
         "replyMarkup": "none",
         "additionalFields": {
           "parse_mode": "HTML",
@@ -761,7 +987,7 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        3140,
+        4020,
         60
       ],
       "credentials": {
@@ -880,6 +1106,35 @@
       "main": [
         [
           {
+            "node": "¿Quitar botones?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Quitar botones?": {
+      "main": [
+        [
+          {
+            "node": "Quitar botones",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Enviar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quitar botones": {
+      "main": [
+        [
+          {
             "node": "¿Enviar?",
             "type": "main",
             "index": 0
@@ -968,6 +1223,28 @@
         ]
       ]
     },
+    "Guardar edición": {
+      "main": [
+        [
+          {
+            "node": "¿Texto pedido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Texto pedido?": {
+      "main": [
+        [
+          {
+            "node": "Quitar botones al editar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "¿Texto?": {
       "main": [
         [
@@ -1043,6 +1320,35 @@
       ]
     },
     "Texto fallo": {
+      "main": [
+        [
+          {
+            "node": "¿Devolver botones?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Devolver botones?": {
+      "main": [
+        [
+          {
+            "node": "Devolver botones",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Avisar fallo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Devolver botones": {
       "main": [
         [
           {
