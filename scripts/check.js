@@ -3,7 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { normalizeEmail } = require('../src/normalize');
+const { normalizeEmail, repairMojibake, decodeUtf8Bytes } = require('../src/normalize');
 const { inspectMail, isValidAddress } = require('../src/security');
 const { decide, extractJson, validateModelOutput } = require('../src/decide');
 const { approvalMessage, leadMessage, summaryMessage, failureMessage, replySubject } = require('../src/format');
@@ -471,5 +471,51 @@ assert.strictEqual(prepared.reply_subject, 'Re:');
 assert.strictEqual(prepared.recent, 1);
 const askFailed = runNode(replyFlow, 'Fallo aprobación', { error: { message: 'connect ECONNREFUSED' } }, { 'Preparar envío': { id: 'r3', from_address: 'ana@cliente.example', subject: '' }, 'Configuración': { telegram_chat_id: '111' } });
 assert.ok(askFailed.text.includes('retenido_bucle') && askFailed.text.includes('ECONNREFUSED') && askFailed.id === 'r3', askFailed.text);
+
+// --- Acentos rotos del IMAP (n8n 2.10.2, formato simple): UTF-8 leído como latin1 ---
+// Lo que hace @n8n/imap con una parte quoted-printable UTF-8: cada byte, un carácter.
+const asN8n = (text) => Buffer.from(text, 'utf8').toString('latin1');
+const realBroken = 'El panel de producciÃ³n estÃ¡ caÃ\u00addo. Â¿cuÃ¡l es el estado?';
+assert.strictEqual(realBroken, asN8n('El panel de producción está caído. ¿cuál es el estado?'), 'el ejemplo real es UTF-8 leído como latin1');
+assert.strictEqual(repairMojibake(realBroken), 'El panel de producción está caído. ¿cuál es el estado?');
+for (const good of ['producción', 'São Paulo', '¿Cuál es el horario? 👍', 'Mañana — gracias, 20 €', 'Café Ã© raro', 'après«x', 'Texto ASCII', '', 'ÂÂÂ']) {
+  assert.strictEqual(repairMojibake(good), good, 'un texto correcto no se toca: ' + good);
+}
+for (const text of ['Niño 👍 y 20 €', 'Ñandú, pingüino', 'línea 1\nlínea 2', '日本語']) {
+  assert.strictEqual(repairMojibake(asN8n(text)), text, text);
+  assert.strictEqual(decodeUtf8Bytes(asN8n(text)), text, 'sin Buffer, a mano: ' + text);
+}
+assert.strictEqual(decodeUtf8Bytes('caf\u00e9'), null, 'latin1 de verdad no es UTF-8');
+assert.strictEqual(decodeUtf8Bytes('\u00c0\u00af'), null, 'secuencia sobrelarga');
+assert.strictEqual(decodeUtf8Bytes('\u00ed\u00a0\u0080'), null, 'surrogate codificado');
+assert.strictEqual(repairMojibake(asN8n('producción'), 'iso-8859-1'), asN8n('producción'), 'si el correo dice latin1, no se toca');
+assert.strictEqual(repairMojibake(asN8n('producción'), 'utf-8'), 'producción');
+// Mezcla con letras fuera de latin1 (Ł): no viene del IMAP roto. Sin esta guarda saldría "Aeba".
+assert.strictEqual(repairMojibake('SÃ£o Paulo y Łeba'), 'SÃ£o Paulo y Łeba');
+// Correo de Gmail tal como lo entrega el trigger: multipart/alternative, el charset va en cada parte.
+const gmailRaw = {
+  from: 'Luis Pérez <luis@cliente.example>',
+  to: 'soporte@tudominio.com',
+  subject: 'El panel de producción está caído',
+  textPlain: asN8n('El panel de producción está caído desde las 9:40.\n¿Cuál es el estado?\n\n--\nLuis'),
+  textHtml: asN8n('<div>El panel de producción está caído desde las 9:40.</div><div>¿Cuál es el estado?</div>'),
+  metadata: { 'message-id': '<g1@cliente.example>', 'content-type': 'multipart/alternative; boundary="000000000000abc"', 'auto-submitted': 'no' },
+};
+const gmail = normalizeEmail(gmailRaw);
+assert.strictEqual(gmail.body, 'El panel de producción está caído desde las 9:40.\n¿Cuál es el estado?', gmail.body);
+assert.strictEqual(gmail.subject, 'El panel de producción está caído', 'el asunto ya llegaba bien');
+assert.strictEqual(inspectMail(gmail, 'soporte@tudominio.com').ignore, false, 'las cabeceras de metadata siguen llegando al filtro');
+assert.strictEqual(normalizeEmail({ from: 'a@b.example', subject: 'x', textHtml: asN8n('<p>¿Cuál es el horario?</p>'), metadata: {} }).body, '¿Cuál es el horario?', 'solo HTML');
+assert.strictEqual(normalizeEmail({ from: 'a@b.example', subject: 'x', textPlain: 'Información', metadata: { 'content-type': 'text/plain; charset="ISO-8859-1"' } }).body, 'Información');
+// Correo de una sola parte: el charset de metadata decide. Si dice latin1, "Ã³" es lo que escribió.
+assert.strictEqual(normalizeEmail({ from: 'a@b.example', subject: 'x', textPlain: asN8n('producción'), metadata: { 'content-type': 'text/plain; charset="ISO-8859-1"' } }).body, asN8n('producción'));
+assert.strictEqual(normalizeEmail({ from: 'a@b.example', subject: 'x', textPlain: asN8n('producción'), metadata: { 'content-type': 'text/plain; charset="UTF-8"' } }).body, 'producción');
+assert.strictEqual(normalizeEmail({ from: 'a@b.example', subject: 'x', textPlain: '¿Cuál? São Paulo 👍', metadata: {} }).body, '¿Cuál? São Paulo 👍');
+// El nodo Normalizar del 01, ejecutado con y sin Buffer (el runner de 2.10.2 sí lo tiene).
+const normalizeCode = nodeOf('01-ingesta.json', 'Normalizar').parameters.jsCode;
+const viaNode = new Function('$json', 'require', normalizeCode)(gmailRaw, require).json; // eslint-disable-line no-new-func
+assert.strictEqual(viaNode.body, gmail.body, 'el 01 repara');
+const noBuffer = new Function('$json', 'require', 'Buffer', normalizeCode)(gmailRaw, require, undefined).json; // eslint-disable-line no-new-func
+assert.strictEqual(noBuffer.body, gmail.body, 'sin Buffer, igual');
 
 console.log('check ok');

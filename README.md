@@ -308,7 +308,7 @@ La clave única es `message_id` (la cabecera Message-ID). Lo primero que hace el
 
 Si el correo no trae Message-ID, el 01 calcula uno estable con remitente, destinatario, fecha, asunto y cuerpo (`generado-` + SHA-256). El mismo correo leído dos veces da la misma clave. A ese correo se le contesta sin `In-Reply-To`: no se inventa un id que el cliente no tiene.
 
-No se contesta si la cabecera `Auto-Submitted` no es `no`, si viene `X-Autoreply`, `X-Autorespond`, `List-Id`, si la precedencia es bulk/list/junk, si el remitente es del estilo `no-reply@`, `mailer-daemon` o `postmaster`, o si el From no es una sola dirección normal (dos direcciones o caracteres raros: la respuesta podría acabar en un tercero). El correo 10 es la autorespuesta de vacaciones: se guarda como `ignorado_autorespuesta` y no sale nada. El nodo IMAP va en formato *simple*: así entrega todas las cabeceras en `metadata`, que es lo que lee el filtro. Las respuestas automáticas salen con `Auto-Submitted: auto-replied` (RFC 3834), para que otra autorespuesta no conteste.
+No se contesta si la cabecera `Auto-Submitted` no es `no`, si viene `X-Autoreply`, `X-Autorespond`, `List-Id`, si la precedencia es bulk/list/junk, si el remitente es del estilo `no-reply@`, `mailer-daemon` o `postmaster`, o si el From no es una sola dirección normal (dos direcciones o caracteres raros: la respuesta podría acabar en un tercero). El correo 10 es la autorespuesta de vacaciones: se guarda como `ignorado_autorespuesta` y no sale nada. El nodo IMAP va en formato *simple*: así entrega todas las cabeceras en `metadata`, que es lo que lee el filtro (y por eso los acentos se reparan en la normalización: ver [Acentos con Gmail](#acentos-con-gmail)). Las respuestas automáticas salen con `Auto-Submitted: auto-replied` (RFC 3834), para que otra autorespuesta no conteste.
 
 ### Freno anti-bucles
 
@@ -331,6 +331,14 @@ curl -sS -X POST https://n8n.tudominio.com/webhook/mail-approval \
 ```
 
 Si es Telegram lo que falla dentro del 03a, la fila queda en `error_aviso`, como cualquier aviso de aprobación. En el resumen, "Retenidos por bucle" son las veces que saltó el freno en las últimas 24 horas, sacadas de `mail_actions`.
+
+## Acentos con Gmail
+
+En la prueba con Gmail real, el cuerpo llegaba con los acentos rotos: «El panel de producciÃ³n estÃ¡ caÃ­do», «Â¿cuÃ¡l». El asunto, bien. Es un fallo del nodo IMAP de n8n 2.10.2 en formato *simple*: `@n8n/imap` decodifica el quoted-printable sin pasarle el charset de la parte (`getPartData` llama a `PartData.fromData` sin él) y cada byte UTF-8 llega como un carácter latin1. El asunto va por la cabecera (RFC 2047) y se decodifica por otro lado. Gmail manda el texto como `multipart/alternative`, `text/plain; charset="UTF-8"` en quoted-printable: le pasa a casi cualquier correo con tildes.
+
+`src/normalize.js` lo arregla lo primero, en `textPlain` y `textHtml`, antes de quitar HTML, firmas y citas. Si el texto tiene pinta de UTF-8 leído como latin1 (`Ã³`, `Â¿`...), todos sus caracteres caben en latin1 y, releído como UTF-8, es válido, se cambia por ese. Si no, se queda como estaba: «producción», «São Paulo», un emoji o un texto con letras de fuera de latin1 no se tocan. Si el correo es de una sola parte y su `Content-Type` (en `metadata`) declara otro charset, tampoco. Con eso salen bien `body_normalized`, Telegram, la consulta al RAG y la issue. El runner de JavaScript de 2.10.2 tiene `Buffer`; si no lo tuviera, decodifica a mano.
+
+¿Por qué no el formato *resolved*? Pasa el correo entero por `mailparser`, que sí respeta el charset. Pero en n8n 2.10.2 descarga siempre el mensaje completo y convierte cada adjunto en un binario de la ejecución, sin opción para evitarlo. No queremos adjuntos de clientes guardados en las ejecuciones. Con *simple* no se bajan, las cabeceras siguen en `metadata` para el filtro y la reparación es pequeña y está probada. Lo que no arregla: un cuerpo en ISO-8859-1 codificado en base64 (n8n lo lee como UTF-8 y se pierde). Gmail y Outlook mandan UTF-8.
 
 ## Hilo del correo
 
@@ -358,7 +366,7 @@ Si el fichero no está montado, el nodo falla al importar `smtplib`. No es silen
 Las pruebas de la lógica no necesitan nada instalado:
 
 ```bash
-node scripts/check.js                     # normalización, filtros, decisión, botones, issue, JSON de los flujos
+node scripts/check.js                     # normalización (acentos), filtros, decisión, botones, issue, JSON de los flujos
 python3 scripts/check_mail.py             # el envío por SMTP en el hilo, con un servidor falso
 python3 scripts/build_workflows.py --check  # los JSON están al día con src/ y prompts/
 ```

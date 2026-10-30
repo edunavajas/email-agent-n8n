@@ -220,6 +220,7 @@ Sin maquillar. Sirve para contarlo.
 9. **No hay buzón, ni bot, ni clave de modelo, ni token de issues en este entorno.** La decisión, el esquema, el RAG vivo y el reinicio sí. El correo saliendo al remitente y el dedo en el botón, no.
 10. **El freno anti-bucles retenía en silencio.** En la prueba con Gmail real, un cliente que preguntó dos cosas en una hora se quedó sin respuesta y sin aviso: la fila se quedaba en `retenido_bucle` y solo salía en el resumen del día siguiente. Ahora el freno sigue cortando el envío automático, pero el correo pasa al 03a y llega a Telegram con el borrador, los tres botones y el motivo.
 11. **`Re: (sin asunto)` rompe el hilo en Gmail.** A un correo sin asunto se le contestaba con `Re: (sin asunto)` y Gmail abría un hilo nuevo, con `In-Reply-To` y `References` correctos. Con `Re:` a secas lo mete en el mismo hilo. Ahora sale así.
+12. **Acentos rotos en el cuerpo con Gmail.** «El panel de producciÃ³n estÃ¡ caÃ­do» en la base, en Telegram, en la consulta al RAG y en la issue. El asunto, bien. Es el nodo IMAP de n8n 2.10.2 en formato simple: decodifica el quoted-printable sin mirar el charset y cada byte UTF-8 llega como un carácter latin1. Lo miré en el código de `@n8n/imap`, dentro de la imagen. Ahora `normalize.js` lo repara lo primero, solo cuando tiene pinta de eso y releído como UTF-8 es válido. No cambié al formato *resolved*: decodifica bien, pero baja siempre los adjuntos a la ejecución.
 
 ---
 
